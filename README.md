@@ -29,8 +29,8 @@ no "whose data is this" question to answer. See
 
 | Layer | Choice |
 |-------|--------|
-| Extraction | Tiered: deterministic HTML/table parsers first, Claude fallback for non-templated pages |
-| Data source signal | Consumes change-detection from `research/au-visa-sources`' crawler — koshi parses, the crawler discovers |
+| Discovery & crawling | Owned by koshi — crawls its own 19-domain source list, hashes pages for change-detection, stores the registry in Postgres (`source_pages`) |
+| Extraction | Tiered: deterministic HTML/table parsers, PDF parsers, Claude fallback for non-templated pages, manual curation where a real source isn't cleanly scrapable |
 | Backend | FastAPI, Python 3.11+ |
 | Data | Cloud SQL Postgres (shares an instance with saathi/manaslu, separate database) |
 | Auth | Cloud Run IAM invoker only — no end-user identity |
@@ -42,5 +42,5 @@ no "whose data is this" question to answer. See
 - `thamel` — sibling headless service, different domain (personal data: tracker/calculator/checklist/explainer, resource-server auth) — not called by koshi, both called by lukla.
 - `manaslu` — sibling headless service, different domain (personal document scan/fill) — reached only via thamel's BFF, not by koshi.
 - `saathi` — docs/specs/research only, no code; the original Landscape Navigator design and mockup this service implements.
-- `research/au-visa-sources` — the crawler koshi's extraction pipeline reacts to.
-- `karki-labs-infra` — Terraform, GCP projects.
+- `research/au-visa-sources` — the crawler koshi's own discovery/change-detection was rebuilt from (see design spec §5); its own ongoing role is an open question there, not yet decided.
+- `karki-labs-infra` — Terraform, GCP projects (deliberately not needed until koshi's local setup is working — see design spec §11).

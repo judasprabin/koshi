@@ -46,9 +46,11 @@ versioned API. koshi is exactly that shape for landscape data.
   resource servers.
 - Not a UI. No rendering, no templates beyond the deterministic text fields
   it returns as data.
-- Not the crawler. `research/au-visa-sources` still owns page discovery and
-  change detection; koshi consumes that signal and does the structured
-  extraction.
+- Not dependent on a separate crawler repo anymore. Discovery and
+  change-detection (previously `research/au-visa-sources`, feeding a Notion
+  registry) are absorbed into koshi as of this revision — see §5. koshi owns
+  the full pipeline end to end: discover → detect change → extract →
+  validate → store.
 - Not an advice or eligibility service. Every response is a sourced,
   published fact — never a personalized judgment (§7).
 - **Not a service that pretends every fact is equally solid.** Some of what
@@ -205,41 +207,81 @@ has no confirmed source, that's stated plainly instead of assigned one.
    still requires `source_url` + `retrieved_at`; it just means a person, not
    a parser, produced the value.
 
-## 5. Extraction pipeline & tooling
+## 5. Discovery, change-detection & extraction pipeline
 
-Four tiers, not two — v1 undercounted this:
+**Architecture decision (this revision): the crawler moves into koshi.**
+`research/au-visa-sources` was a separate repo, with its own config and a
+Notion-based registry of pages/change-status, built for human-readable
+change tracking rather than feeding a structured-extraction pipeline. That
+split made adding a new domain (e.g. assessing bodies) a cross-repo
+coordination problem, and made "what triggers extraction" an unclear
+hand-off between two codebases. Rebuilding it inside koshi, purpose-built
+for koshi's own needs, removes both problems: one repo, one datastore, one
+person (or one PR) can add a domain and ship the parser for it in the same
+change.
 
-1. **Deterministic HTML parsers (primary).** BeautifulSoup4 + lxml, one
-   parser per known page type: SkillSelect round-results, visa fees,
-   processing times, ANZSCO/skills-priority-list pages, MLTSSL legislative
-   HTML where structured. Cheap, reliable, used wherever a page has a
-   consistent table shape.
-2. **PDF extraction (new tier this revision adds).** `pdfplumber` for the
-   planning-levels and annual-report-style publications that ceilings and
-   `program_allocation` come from. These are not HTML tables; treating them
-   as such was a gap in v1. Claude reads pdfplumber's extracted text/tables
-   as a fallback when a report's layout doesn't parse cleanly on the first
-   pass.
-3. **Claude fallback (secondary).** Anthropic SDK, for prose pages that
-   don't fit a template: visa subclass pages, health/character/English
-   requirement pages, gazette-style legislative PDFs with inconsistent
-   layout.
-4. **Manual curation tier (new this revision, explicit rather than
-   implied).** State nomination detail, assessing-body data, and
-   policy-event annotations are entered by a person against the source page,
-   on a review cadence (monthly is the working assumption — see §11), stored
-   in versioned YAML/JSON seed files reviewed in a PR before ingestion —
-   `bato`'s pattern, reused rather than reinvented. `source_url` and
-   `retrieved_at` are still required at ingestion; `reliability_tier` marks
-   it `official_curated` so the API (and the frontend) can distinguish it
-   from an automated extraction without hiding that distinction.
+**`source_pages`** — the new crawl registry, a koshi Postgres table, replacing
+Notion: `url` (unique), `domain`, `category` (the crawler's existing 18
+categories, ported as-is), `content_hash`, `first_seen_at`,
+`last_checked_at`, `last_changed_at`, `status` (active/removed). This is
+crawler metadata, not a fact table — it doesn't carry `reliability_tier`,
+because it *is* the source, not a claim sourced from something else. The
+extraction pipeline reads rows where `last_changed_at > last_extracted_at`
+and, for each, writes rows into the §3 fact tables citing that page's `url`
+as `source_url`.
 
-**Trigger:** a Cloud Run Job, invoked by Cloud Scheduler, reads the
-crawler's change-detection output and re-parses only what changed — tier 1–3
-data. Tier 4 (manual curation) is reviewed on its own cadence, independent of
-the crawler's daily check, since the underlying pages don't usefully change
-that often anyway (§4 of v1's freshness table, unchanged: "updated daily"
-describes the check, not the data).
+**The 19-domain config** (`immi.homeaffairs.gov.au` paths, state government
+sites, legislation.gov.au, jobsandskills.gov.au, etc.) ports into koshi
+directly — same domains, same settings (max_pages_per_run 300,
+max_pages_per_domain 15, 1s request delay, 15s timeout) — plus the two
+domains §4 flagged as missing (assessing bodies, policy-event sources),
+added now that adding a domain no longer requires touching a different repo.
+
+Five tiers of getting a fact from a page into a table:
+
+1. **Crawl & change-detection (new, formerly external).** httpx + BeautifulSoup4
+   walk the configured domains, hash each page's content, and update
+   `source_pages`. Cheap, runs on a schedule, produces no facts itself — only
+   the signal that something may have changed.
+2. **Deterministic HTML parsers (primary extraction tier).** BeautifulSoup4 +
+   lxml, one parser per known page type: SkillSelect round-results, visa
+   fees, processing times, ANZSCO/skills-priority-list pages, MLTSSL
+   legislative HTML where structured.
+3. **PDF extraction.** `pdfplumber` for the planning-levels and annual-report
+   -style publications that ceilings and `program_allocation` come from.
+   Claude reads pdfplumber's extracted text/tables as a fallback when a
+   report's layout doesn't parse cleanly on the first pass.
+4. **Claude fallback.** Anthropic SDK, for prose pages that don't fit a
+   template: visa subclass pages, health/character/English requirement
+   pages, gazette-style legislative PDFs with inconsistent layout.
+5. **Manual curation — the general fallback whenever a page resists tiers
+   2–4, not only the two cases already named.** State nomination detail and
+   assessing-body data are the known cases today, but the rule is general:
+   if a real source exists and it isn't cleanly scrapable, a person enters
+   the value against that source, on a review cadence (monthly is the
+   working assumption — see §11), in versioned YAML/JSON seed files reviewed
+   in a PR before ingestion — `bato`'s pattern, reused rather than
+   reinvented. `source_url` and `retrieved_at` are still required at
+   ingestion; `reliability_tier` marks it `official_curated` so the API can
+   distinguish it from an automated extraction without hiding that
+   distinction.
+
+**Trigger:** a Cloud Run Job, invoked by Cloud Scheduler, runs tier 1
+(crawl), then tiers 2–4 against whatever `source_pages` rows just changed.
+Tier 5 (manual curation) runs on its own cadence, independent of the crawl
+schedule, since the underlying pages don't usefully change that often
+anyway ("updated daily" describes the check, not most of the data — see §4).
+
+**Local dev, before any of this touches Cloud Scheduler:** the crawl job,
+extraction tiers, and `source_pages`/fact tables all run against a local
+Postgres (Docker Compose) and are invoked manually or via a simple script —
+no Cloud Run Job, no Scheduler, until the pipeline is proven locally. See §11.
+
+**What happens to `research/au-visa-sources`:** its config and any working
+parser logic are the starting point koshi ports from, not thrown away — but
+the repo itself becomes either redundant or repurposed once koshi's own
+crawler is live. That's a call worth making deliberately rather than by
+default; flagged as an open decision in §11, not resolved here.
 
 **Validation gate, before any row lands in the DB:** non-empty `source_url`
 (unless `reliability_tier='derived'`), a parseable `retrieved_at`, and
@@ -312,12 +354,19 @@ only by the offline extraction pipeline, never the request-serving API.
 
 ## 9. Tech stack
 
-Python 3.11+, FastAPI, SQLAlchemy 2.0 + Alembic, Cloud SQL Postgres, pytest.
-BeautifulSoup4 + lxml for deterministic HTML extraction, **pdfplumber for
-PDF/report extraction (new this revision)**, Anthropic SDK for fallback
-extraction. Deploy: Cloud Run for the API, a Cloud Run Job (via Cloud
-Scheduler) for extraction, GitHub Actions + WIF for CI/CD, Terraform in
-`karki-labs-infra` (not GKE, not Cloud Build).
+Python 3.11+, FastAPI, SQLAlchemy 2.0 + Alembic, Postgres, pytest.
+`httpx` + BeautifulSoup4 + lxml for crawling and deterministic HTML
+extraction (dual-purpose — same libraries, §5 tiers 1–2), **pdfplumber for
+PDF/report extraction**, Anthropic SDK for fallback extraction. No Notion
+dependency (superseded by `source_pages`, §5).
+
+**Local dev:** Postgres via Docker Compose, crawl/extraction run as scripts
+or a local scheduler (e.g. `cron` or a simple loop) — no cloud dependency to
+get the pipeline working end to end.
+
+**Deploy (later, see §11 on sequencing):** Cloud Run for the API, a Cloud
+Run Job (via Cloud Scheduler) for crawl + extraction, GitHub Actions + WIF
+for CI/CD, Terraform in `karki-labs-infra` (not GKE, not Cloud Build).
 
 ## 10. Relationship to the existing plan
 
@@ -334,12 +383,27 @@ plan.
 
 ## 11. Open questions
 
-- **Crawler config gap:** assessing-body sites (mara.gov.au and individual
-  bodies) and policy-event sources (press releases, budget.gov.au) are not
-  in `research/au-visa-sources/config.yaml`'s current 19-domain list. Needs
-  a config change in that repo before koshi can even reach those pages —
-  raise as a task in `research/au-visa-sources`, not something koshi can
-  work around on its own.
+- **Fate of `research/au-visa-sources`:** now that koshi has its own
+  crawler (§5), that repo becomes either redundant or needs a narrower
+  reason to keep existing (e.g. `thamel`'s F4a RAG ingestion, which the
+  original thamel spec assumed would share this crawler — see below).
+  Options: archive it once koshi's crawler is proven; repurpose it as
+  F4a-only (page text → chunking, a different extraction purpose than
+  koshi's structured facts); or keep it as a read-only historical reference
+  for the config koshi ported from. Not blocking koshi's own build — but
+  worth a deliberate call, not a default.
+- **Consequence for `thamel`'s F4a:** thamel's design spec
+  (`thamel/docs/superpowers/specs/2026-08-14-thamel-design.md` §3, F4a)
+  currently assumes it ingests "the same AU Visa Source Registry crawler
+  koshi also consumes." That assumption no longer holds once koshi absorbs
+  and rebuilds that crawler for its own structured-extraction purpose.
+  thamel will need either its own independent page-fetching for F4a's
+  chunking/embedding needs, or a narrow, deliberate read of koshi's
+  `source_pages` (public page metadata, not personal data — plausibly a
+  smaller exception to the "koshi and thamel don't call each other" rule,
+  but that's a decision for thamel's spec, not this one). Flagged here so
+  it isn't silently forgotten; not resolved in this pass since the current
+  focus is koshi.
 - **Points-distribution histogram (§3.4):** deferred until a real source is
   found. Worth a deliberate, separate research spike (does Home Affairs
   publish this anywhere, even in an annual report appendix; is a
@@ -350,28 +414,36 @@ plan.
   before committing to the column; launch with nulls where unconfirmed
   rather than approximate.
 - **Manual curation review cadence:** monthly is the working assumption for
-  state nomination data and assessing-body data; not yet validated against
-  how often those pages actually change in practice.
+  state nomination data and assessing-body data (and now, per §5 tier 5,
+  any other data type scraping turns out not to reach); not yet validated
+  against how often those pages actually change in practice.
 - **Points criteria duplication (§3.1):** koshi and thamel both need the 12
   points-test criteria — koshi as browsable reference, thamel as
   computation. Kept as deliberate duplication for service isolation; if this
   proves error-prone to keep in sync by hand, revisit as a shared config
   package rather than a network dependency between the two services.
-- Exact Cloud SQL instance-sharing mechanics — still a `karki-labs-infra`
-  Terraform task, not yet written (unchanged from v1).
+- **Cloud SQL / Terraform — deliberately deferred, not a blocker.** Local
+  dev runs entirely on a local Postgres (§9); Cloud SQL instance-sharing and
+  the corresponding `karki-labs-infra` Terraform work happen once the local
+  setup is working end to end and the schema has settled, not before. This
+  is a sequencing decision, not an unresolved question — don't pull it
+  forward into the implementation plan's early tasks.
 - Whether the extraction validation gate should hard-fail an ingestion run
-  or soft-fail with an alert — unchanged open item from v1, no alerting
-  channel decided yet.
+  or soft-fail with an alert — unchanged open item, no alerting channel
+  decided yet.
 
 ## 12. Success criteria
 
 Faithful to this spec if: every table in §3 exists with the fields listed
-(except §3.4, deliberately deferred); no row lacks `source_url`/
-`retrieved_at` unless `reliability_tier='derived'`; every API response
-serializes `reliability_tier` and `retrieved_at` per fact, not just per
-endpoint; every extraction path (HTML, PDF, Claude fallback, manual
-curation) has a working implementation or an explicitly deferred status —
-never a silent guess presented as fact; the API in §6 is fully described by
-its own OpenAPI schema; no response field or generated string states or
-implies a personalized outcome; and koshi has zero end-user-identity code
-anywhere, on purpose.
+(except §3.4, deliberately deferred); crawling and change-detection run
+inside koshi against its own `source_pages` registry, with no runtime
+dependency on `research/au-visa-sources` or Notion; no row lacks
+`source_url`/`retrieved_at` unless `reliability_tier='derived'`; every API
+response serializes `reliability_tier` and `retrieved_at` per fact, not just
+per endpoint; every extraction path (crawl, HTML, PDF, Claude fallback,
+manual curation) has a working implementation or an explicitly deferred
+status — never a silent guess presented as fact; the whole pipeline runs
+against local Postgres before any Cloud SQL/Terraform work is touched; the
+API in §6 is fully described by its own OpenAPI schema; no response field or
+generated string states or implies a personalized outcome; and koshi has
+zero end-user-identity code anywhere, on purpose.
