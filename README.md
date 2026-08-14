@@ -36,6 +36,17 @@ no "whose data is this" question to answer. See
 | Auth | Cloud Run IAM invoker only — no end-user identity |
 | Deploy | Cloud Run · GitHub Actions (WIF) · Terraform in `karki-labs-infra` |
 
+## Local development
+
+1. Install and start Postgres 16 — e.g. via Homebrew: `brew install postgresql@16 && brew services start postgresql@16`. (A `docker-compose.yml` is also provided if you prefer running Postgres in a container instead — either works, since both end up serving the same `postgresql+psycopg://koshi:koshi@localhost:5432/...` connection the app expects.)
+2. Create the `koshi` role and the `koshi`/`koshi_test` databases, owned by that role, with password `koshi`.
+3. `pip install -e ".[dev]"`
+4. `DATABASE_URL=postgresql+psycopg://koshi:koshi@localhost:5432/koshi alembic upgrade head`
+5. `pytest` — runs against `koshi_test` (see `tests/conftest.py`)
+6. `uvicorn koshi.main:app --reload` — serves the API at `http://localhost:8000/v1`, docs at `/v1/docs`
+
+No Cloud SQL, no Terraform, no Cloud Run needed for local development — see the design spec §9/§11 for why that's deliberate, not a shortcut.
+
 ## Related repos
 
 - `lukla` — the one Saathi frontend; calls this API for the Landscape Navigator (and calls `thamel` for everything else).
