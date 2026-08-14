@@ -14,10 +14,12 @@ inherited, not reinvented.
 ## Consumers
 
 ```
-lukla (separate repo, Landscape Navigator frontend) ─┐
-future consumers ────────────────────────────────────┼──► koshi /v1 (REST) ──► sourced JSON
-service-to-service auth only (Cloud Run IAM) ─────────┘
+lukla (separate repo, the one Saathi frontend) ─┐
+future consumers ───────────────────────────────┼──► koshi /v1 (REST) ──► sourced JSON
+service-to-service auth only (Cloud Run IAM) ───┘
 ```
+
+lukla also calls a sibling backend, `thamel` (F1–F4a, personal data, resource-server auth) — koshi has no relationship to thamel beyond both being called by lukla; they don't call each other.
 
 No end-user JWT anywhere in this service — the data isn't personal, so there's
 no "whose data is this" question to answer. See
@@ -36,8 +38,9 @@ no "whose data is this" question to answer. See
 
 ## Related repos
 
-- `saathi` — consumes this API for its Landscape Navigator feature (via `lukla`)
-- `lukla` — the frontend that calls this API
-- `manaslu` — a sibling headless service (different domain: personal document scan/fill, not public landscape data)
-- `research/au-visa-sources` — the crawler koshi's extraction pipeline reacts to
-- `karki-labs-infra` — Terraform, GCP projects
+- `lukla` — the one Saathi frontend; calls this API for the Landscape Navigator (and calls `thamel` for everything else).
+- `thamel` — sibling headless service, different domain (personal data: tracker/calculator/checklist/explainer, resource-server auth) — not called by koshi, both called by lukla.
+- `manaslu` — sibling headless service, different domain (personal document scan/fill) — reached only via thamel's BFF, not by koshi.
+- `saathi` — docs/specs/research only, no code; the original Landscape Navigator design and mockup this service implements.
+- `research/au-visa-sources` — the crawler koshi's extraction pipeline reacts to.
+- `karki-labs-infra` — Terraform, GCP projects.

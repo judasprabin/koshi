@@ -23,7 +23,9 @@ Origin: split out of Saathi's "Visa Landscape Navigator" feature
 (`saathi/docs/superpowers/specs/2026-08-13-visa-landscape-navigator-design.md`)
 into its own microservice, mirroring manaslu's proven headless-service pattern,
 once the feature's scope was judged distinct enough from Saathi's other
-backend work (F1–F3 CRUD, F4a RAG) to warrant its own bounded context.
+backend work (F1–F3 CRUD, F4a RAG) to warrant its own bounded context. That
+other backend work subsequently moved out too, into `thamel` — saathi itself
+now holds no code at all, just docs/specs/research.
 
 ## Non-negotiable regulatory posture (inherited from Saathi)
 
@@ -33,8 +35,9 @@ This is the same discipline manaslu and bato both hold; do not relax it here.
 
 ## Related repos
 
-- `saathi` — the product this serves; also owns F1–F3/F4a and the manaslu integration.
-- `lukla` — the frontend that consumes koshi's API (separate repo, separate deploy).
-- `manaslu` — sibling headless service, different domain (personal document scan/fill).
+- `lukla` — the one Saathi frontend; consumes koshi's API for the Landscape Navigator (separate repo, separate deploy).
+- `thamel` — sibling headless service, different domain (F1–F4a: personal tracker/calculator/checklist/explainer data, resource-server auth) — not called by koshi, both called by lukla.
+- `manaslu` — sibling headless service, different domain (personal document scan/fill) — reached only via thamel's BFF.
+- `saathi` — docs/specs/research only, no code; owns the original Landscape Navigator design and mockup this service implements.
 - `research/au-visa-sources` — the crawler koshi's extraction pipeline reacts to (page discovery + change detection; koshi does the structured parsing).
 - `karki-labs-infra` — Terraform, GCP projects, shared CI/CD pattern (GitHub Actions + WIF, Cloud Run — not GKE, not Cloud Build; see that repo's `infra/` docs if tempted to reach for either).
