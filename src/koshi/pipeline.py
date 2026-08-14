@@ -1,6 +1,7 @@
 import datetime as dt
 
 import httpx
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from koshi.crawler.fetch import fetch_and_register
@@ -50,6 +51,22 @@ def sync_skillselect_rounds(
         source_url=url,
         retrieved_at=dt.datetime.now(dt.timezone.utc),
     )
-    session.add_all(rounds)
+
+    # Upsert by (visa_code, occupation_code, round_date): a whole-page hash
+    # change (build stamp, "last reviewed" date) re-parses the same round
+    # data and must not manufacture duplicate rows / fake momentum.
+    new_rounds = []
+    for round_ in rounds:
+        existing = session.scalar(
+            select(EoiRound).where(
+                EoiRound.visa_code == round_.visa_code,
+                EoiRound.occupation_code == round_.occupation_code,
+                EoiRound.round_date == round_.round_date,
+            )
+        )
+        if existing is not None:
+            continue
+        session.add(round_)
+        new_rounds.append(round_)
     session.commit()
-    return rounds
+    return new_rounds

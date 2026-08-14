@@ -13,7 +13,7 @@ def compute_momentum(session: Session, occupation_code: str) -> str | None:
     rounds = session.scalars(
         select(EoiRound)
         .where(EoiRound.occupation_code == occupation_code)
-        .order_by(EoiRound.round_date.desc())
+        .order_by(EoiRound.round_date.desc(), EoiRound.id.desc())
         .limit(3)
     ).all()
     if len(rounds) < 3:
