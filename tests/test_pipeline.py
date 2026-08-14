@@ -1,10 +1,12 @@
 import datetime as dt
 
 import httpx
+import pytest
 
 from koshi.models.eoi_rounds import EoiRound
 from koshi.models.occupations import Occupation
-from koshi.pipeline import sync_anzsco_occupations, sync_skillselect_rounds
+from koshi.models.source_pages import SourcePage
+from koshi.pipeline import SKILLSELECT_ROUNDS_URL, sync_anzsco_occupations, sync_skillselect_rounds
 
 ANZSCO_FIXTURE = b"""
 <table id="occupation-list">
@@ -31,6 +33,16 @@ ROUNDS_FIXTURE = b"""
 ROUNDS_FIXTURE_REPUBLISHED = b"""
 <!-- build 20260725-002 -->
 <p>Round date: 24 July 2026</p>
+<table id="round-results">
+  <thead><tr><th>Occupation</th><th>Points Threshold</th><th>Invitations Issued</th></tr></thead>
+  <tbody>
+    <tr><td>261313</td><td>85</td><td>120</td></tr>
+  </tbody>
+</table>
+"""
+
+# No "Round date: ..." text — parse_skillselect_rounds raises ValueError.
+BROKEN_ROUNDS_FIXTURE = b"""
 <table id="round-results">
   <thead><tr><th>Occupation</th><th>Points Threshold</th><th>Invitations Issued</th></tr></thead>
   <tbody>
@@ -90,3 +102,35 @@ def test_sync_skillselect_rounds_dedups_when_page_hash_changes_but_round_is_iden
         .all()
     )
     assert len(rows) == 1
+
+
+def test_parse_failure_does_not_advance_extraction_watermark(db_session):
+    sync_anzsco_occupations(db_session, client=_client_returning(ANZSCO_FIXTURE))
+
+    with pytest.raises(ValueError):
+        sync_skillselect_rounds(db_session, client=_client_returning(BROKEN_ROUNDS_FIXTURE))
+
+    page = db_session.query(SourcePage).filter_by(url=SKILLSELECT_ROUNDS_URL).one()
+    assert page.last_extracted_at is None
+    assert db_session.query(EoiRound).count() == 0
+
+
+def test_sync_retries_parse_after_a_previous_failure(db_session):
+    sync_anzsco_occupations(db_session, client=_client_returning(ANZSCO_FIXTURE))
+
+    with pytest.raises(ValueError):
+        sync_skillselect_rounds(db_session, client=_client_returning(BROKEN_ROUNDS_FIXTURE))
+
+    # Same broken content again: fetch_and_register will report
+    # changed=False (the hash hasn't moved since the failed attempt), but
+    # the sync must still attempt to parse — not silently no-op — because
+    # last_extracted_at was never advanced past last_changed_at.
+    with pytest.raises(ValueError):
+        sync_skillselect_rounds(db_session, client=_client_returning(BROKEN_ROUNDS_FIXTURE))
+
+    # And once the page is republished with valid content, the retry
+    # succeeds and the watermark finally advances.
+    result = sync_skillselect_rounds(db_session, client=_client_returning(ROUNDS_FIXTURE))
+    assert len(result) == 1
+    page = db_session.query(SourcePage).filter_by(url=SKILLSELECT_ROUNDS_URL).one()
+    assert page.last_extracted_at is not None

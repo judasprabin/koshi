@@ -9,25 +9,51 @@ from koshi.extraction.anzsco_occupations import parse_anzsco_occupations
 from koshi.extraction.skillselect_rounds import parse_skillselect_rounds
 from koshi.models.eoi_rounds import EoiRound
 from koshi.models.occupations import Occupation
+from koshi.models.source_pages import SourcePage
 
 ANZSCO_URL = "https://www.jobsandskills.gov.au/data/occupation-and-industry-profiles/occupations-anzsco"
 SKILLSELECT_ROUNDS_URL = "https://immi.homeaffairs.gov.au/visas/working-in-australia/skillselect/invitation-rounds"
+
+# A stand-in for "never extracted" that compares less than any real
+# last_changed_at, so a page with no last_extracted_at watermark always
+# looks due for extraction.
+_NEVER_EXTRACTED = dt.datetime.min.replace(tzinfo=dt.timezone.utc)
+
+
+def _needs_extraction(page: SourcePage) -> bool:
+    """Whether this page's content has changed since it was last
+    successfully parsed.
+
+    Deliberately NOT the `changed` bool fetch_and_register returns:
+    fetch_and_register commits content_hash/last_changed_at before parsing
+    is even attempted, so if parsing raised last time, `changed` would be
+    False on the next run (the hash hasn't moved) and the page would be
+    silently skipped forever. Comparing last_changed_at against our own
+    last_extracted_at watermark instead means a prior parse failure (which
+    leaves last_extracted_at untouched) is retried on every subsequent run.
+    """
+    watermark = page.last_extracted_at or _NEVER_EXTRACTED
+    return page.last_changed_at > watermark
 
 
 def sync_anzsco_occupations(
     session: Session, *, url: str = ANZSCO_URL, client: httpx.Client | None = None
 ) -> list[Occupation]:
-    _page, changed, content = fetch_and_register(
+    page, _changed, text = fetch_and_register(
         session, url=url, domain="www.jobsandskills.gov.au", category="anzsco_occupations", client=client
     )
-    if not changed:
+    if not _needs_extraction(page):
         return []
 
     occupations = parse_anzsco_occupations(
-        content.decode("utf-8"), source_url=url, retrieved_at=dt.datetime.now(dt.timezone.utc)
+        text, source_url=url, retrieved_at=dt.datetime.now(dt.timezone.utc)
     )
     for occupation in occupations:
         session.merge(occupation)
+    # Only advance the extraction watermark once parsing AND persisting
+    # have both succeeded — if parse_anzsco_occupations raised above, this
+    # line (and the commit) never runs, so the next sync retries.
+    page.last_extracted_at = dt.datetime.now(dt.timezone.utc)
     session.commit()
     return occupations
 
@@ -39,14 +65,14 @@ def sync_skillselect_rounds(
     visa_code: str = "189",
     client: httpx.Client | None = None,
 ) -> list[EoiRound]:
-    _page, changed, content = fetch_and_register(
+    page, _changed, text = fetch_and_register(
         session, url=url, domain="immi.homeaffairs.gov.au", category="skillselect_rounds", client=client
     )
-    if not changed:
+    if not _needs_extraction(page):
         return []
 
     rounds = parse_skillselect_rounds(
-        content.decode("utf-8"),
+        text,
         visa_code=visa_code,
         source_url=url,
         retrieved_at=dt.datetime.now(dt.timezone.utc),
@@ -68,5 +94,8 @@ def sync_skillselect_rounds(
             continue
         session.add(round_)
         new_rounds.append(round_)
+    # Only advance the extraction watermark once parsing AND persisting
+    # have both succeeded — see sync_anzsco_occupations above.
+    page.last_extracted_at = dt.datetime.now(dt.timezone.utc)
     session.commit()
     return new_rounds

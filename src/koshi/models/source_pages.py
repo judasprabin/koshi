@@ -22,3 +22,9 @@ class SourcePage(Base):
     last_checked_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_changed_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     status: Mapped[str] = mapped_column(String, nullable=False, default="active")
+    # Watermark for the extraction (parsing) step, separate from the fetch
+    # step's last_changed_at. fetch_and_register commits content_hash /
+    # last_changed_at before the caller ever attempts to parse, so if
+    # parsing fails this is left unset (or stale) and the next sync run
+    # retries — see pipeline.py's _needs_extraction.
+    last_extracted_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

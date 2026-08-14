@@ -14,7 +14,7 @@ def _client_returning(body: bytes) -> httpx.Client:
 
 def test_new_page_is_registered_as_changed(db_session):
     body = b"<html>version one</html>"
-    page, changed, content = fetch_and_register(
+    page, changed, text = fetch_and_register(
         db_session,
         url=URL,
         domain="immi.homeaffairs.gov.au",
@@ -23,7 +23,7 @@ def test_new_page_is_registered_as_changed(db_session):
     )
     assert changed is True
     assert page.content_hash == hash_content(body)
-    assert content == body
+    assert text == body.decode("utf-8")
 
 
 def test_unchanged_page_is_not_flagged_changed(db_session):
@@ -33,7 +33,7 @@ def test_unchanged_page_is_not_flagged_changed(db_session):
         category="skillselect_rounds", client=_client_returning(body),
     )
 
-    page, changed, content = fetch_and_register(
+    page, changed, text = fetch_and_register(
         db_session, url=URL, domain="immi.homeaffairs.gov.au",
         category="skillselect_rounds", client=_client_returning(body),
     )
@@ -46,10 +46,10 @@ def test_changed_page_is_flagged_changed(db_session):
         category="skillselect_rounds", client=_client_returning(b"<html>version one</html>"),
     )
 
-    page, changed, content = fetch_and_register(
+    page, changed, text = fetch_and_register(
         db_session, url=URL, domain="immi.homeaffairs.gov.au",
         category="skillselect_rounds", client=_client_returning(b"<html>version TWO</html>"),
     )
     assert changed is True
     assert page.content_hash == hash_content(b"<html>version TWO</html>")
-    assert content == b"<html>version TWO</html>"
+    assert text == b"<html>version TWO</html>".decode("utf-8")
