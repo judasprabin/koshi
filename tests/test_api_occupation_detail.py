@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from koshi.db import get_session
 from koshi.main import app
 from koshi.models.ceiling_usage import CeilingUsage
+from koshi.models.occupation_momentum import OccupationMomentum
 from koshi.models.occupations import Occupation
 from koshi.seeds.loader import seed_ceiling_usage
 
@@ -140,3 +141,30 @@ def test_seeded_ceiling_usage_is_actually_servable_end_to_end(db_session, client
     assert body["ceiling_issued"]["value"] == 3200
     assert body["ceiling_cap"]["value"] == 5000
     assert body["places_left"] == 1800
+
+
+def test_get_occupation_momentum_carries_reliability_tier_and_computed_at(db_session, client):
+    """Fix 7: OccupationMomentum already stores reliability_tier="derived"
+    and computed_at — the API must not discard that provenance and expose
+    momentum as a bare direction string, since the design spec requires
+    every fact (computed or scraped) to carry provenance to the client."""
+    _seed(db_session)
+    computed_at = dt.datetime(2026, 8, 5, 12, 0, tzinfo=dt.timezone.utc)
+    db_session.add(
+        OccupationMomentum(
+            occupation_code="261313", computed_at=computed_at,
+            direction="rising", reliability_tier="derived",
+        )
+    )
+    db_session.commit()
+
+    response = client.get("/v1/occupations/261313")
+
+    assert response.status_code == 200
+    momentum = response.json()["momentum"]
+    assert momentum["value"] == "rising"
+    assert momentum["reliability_tier"] == "derived"
+    # Compare as instants, not string reprs: Postgres round-trips
+    # TIMESTAMP WITH TIME ZONE through the session's local offset rather
+    # than preserving UTC's "+00:00" literally.
+    assert dt.datetime.fromisoformat(momentum["computed_at"]) == computed_at

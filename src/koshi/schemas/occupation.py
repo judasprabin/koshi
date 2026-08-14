@@ -10,6 +10,17 @@ class SourcedFact(BaseModel):
     source_url: str
 
 
+class DerivedFact(BaseModel):
+    """A fact koshi computed itself from its own stored data (design spec
+    §3.3), rather than one scraped/curated from an external source — no
+    source_url, but still carries reliability_tier + a timestamp so the
+    client can visually distinguish it from a SourcedFact."""
+
+    value: str
+    reliability_tier: str
+    computed_at: dt.datetime
+
+
 class OccupationProfile(BaseModel):
     code: str
     name: str
@@ -21,7 +32,7 @@ class OccupationProfile(BaseModel):
     ceiling_cap: SourcedFact | None
     places_left: int | None
     latest_threshold: SourcedFact | None
-    momentum: str | None
+    momentum: DerivedFact | None
     insight: str | None
 
 

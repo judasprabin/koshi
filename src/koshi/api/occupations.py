@@ -8,7 +8,7 @@ from koshi.models.ceiling_usage import CeilingUsage
 from koshi.models.eoi_rounds import EoiRound
 from koshi.models.occupation_momentum import OccupationMomentum
 from koshi.models.occupations import Occupation
-from koshi.schemas.occupation import OccupationListItem, OccupationProfile, SourcedFact
+from koshi.schemas.occupation import DerivedFact, OccupationListItem, OccupationProfile, SourcedFact
 
 router = APIRouter(prefix="/v1/occupations", tags=["occupations"])
 
@@ -109,6 +109,14 @@ def get_occupation(code: str, session: Session = Depends(get_session)) -> Occupa
             if latest_round
             else None
         ),
-        momentum=latest_momentum.direction if latest_momentum else None,
+        momentum=(
+            DerivedFact(
+                value=latest_momentum.direction,
+                reliability_tier=latest_momentum.reliability_tier,
+                computed_at=latest_momentum.computed_at,
+            )
+            if latest_momentum
+            else None
+        ),
         insight=insight,
     )
