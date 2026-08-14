@@ -12,7 +12,7 @@ from koshi.schemas.occupation import OccupationListItem, OccupationProfile, Sour
 
 router = APIRouter(prefix="/v1/occupations", tags=["occupations"])
 
-_MOMENTUM_SORT_ORDER = {"rising": 0, "steady": 1, "falling": 2, None: 3}
+_MOMENTUM_SORT_ORDER = {"rising": 0, "steady": 1, "falling": 2}
 
 
 @router.get("", response_model=list[OccupationListItem])
