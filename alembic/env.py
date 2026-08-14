@@ -7,6 +7,7 @@ from alembic import context
 from koshi.db import Base
 import koshi.models.source_pages  # noqa: F401 — registers the table on Base.metadata
 import koshi.models.occupations  # noqa: F401
+import koshi.models.eoi_rounds  # noqa: F401
 
 config = context.config
 if config.config_file_name is not None:

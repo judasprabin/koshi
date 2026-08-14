@@ -4,6 +4,9 @@ import pytest
 from sqlalchemy.orm import sessionmaker
 
 from koshi.db import Base, make_engine
+import koshi.models.source_pages  # noqa: F401
+import koshi.models.occupations  # noqa: F401
+import koshi.models.eoi_rounds  # noqa: F401
 
 TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL", "postgresql+psycopg://koshi:koshi@localhost:5432/koshi_test"
