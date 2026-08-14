@@ -10,6 +10,7 @@ from koshi.extraction.skillselect_rounds import parse_skillselect_rounds
 from koshi.models.eoi_rounds import EoiRound
 from koshi.models.occupations import Occupation
 from koshi.models.source_pages import SourcePage
+from koshi.momentum import refresh_momentum
 
 ANZSCO_URL = "https://www.jobsandskills.gov.au/data/occupation-and-industry-profiles/occupations-anzsco"
 SKILLSELECT_ROUNDS_URL = "https://immi.homeaffairs.gov.au/visas/working-in-australia/skillselect/invitation-rounds"
@@ -98,4 +99,13 @@ def sync_skillselect_rounds(
     # have both succeeded — see sync_anzsco_occupations above.
     page.last_extracted_at = dt.datetime.now(dt.timezone.utc)
     session.commit()
+
+    # Recompute momentum for every occupation touched by a genuinely new
+    # round — nothing else in the system ever calls refresh_momentum, so
+    # without this, occupation_momentum rows are never produced end-to-end
+    # and GET /v1/occupations always shows momentum: null.
+    new_codes = {r.occupation_code for r in new_rounds if r.occupation_code is not None}
+    for code in new_codes:
+        refresh_momentum(session, code)
+
     return new_rounds

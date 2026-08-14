@@ -42,8 +42,9 @@ no "whose data is this" question to answer. See
 2. Create the `koshi` role and the `koshi`/`koshi_test` databases, owned by that role, with password `koshi`.
 3. `pip install -e ".[dev]"`
 4. `DATABASE_URL=postgresql+psycopg://koshi:koshi@localhost:5432/koshi alembic upgrade head`
-5. `pytest` — runs against `koshi_test` (see `tests/conftest.py`)
-6. `uvicorn koshi.main:app --reload` — serves the API at `http://localhost:8000/v1`, docs at `/v1/docs`
+5. `DATABASE_URL=postgresql+psycopg://koshi:koshi@localhost:5432/koshi python -m koshi` — runs the full local sync end-to-end: crawls/parses ANZSCO occupations, crawls/parses SkillSelect EOI rounds (refreshing occupation momentum for every occupation a new round touches), then seeds the manually-curated `ceiling_usage` data. Without this step the API has no data to serve.
+6. `pytest` — runs against `koshi_test` (see `tests/conftest.py`)
+7. `uvicorn koshi.main:app --reload` — serves the API at `http://localhost:8000/v1`, docs at `/v1/docs`
 
 No Cloud SQL, no Terraform, no Cloud Run needed for local development — see the design spec §9/§11 for why that's deliberate, not a shortcut.
 

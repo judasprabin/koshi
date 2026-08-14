@@ -2,6 +2,8 @@ import datetime as dt
 from pathlib import Path
 
 import yaml
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from koshi.models.ceiling_usage import CeilingUsage
 from koshi.provenance import require_provenance
@@ -47,3 +49,31 @@ def load_ceiling_usage_seed(path: Path) -> list[CeilingUsage]:
             )
         )
     return rows
+
+
+def seed_ceiling_usage(session: Session, path: Path) -> list[CeilingUsage]:
+    """Load the ceiling_usage seed file and persist any rows not already
+    in the database.
+
+    Upserts by (occupation_code, program_year, as_of_date) — the same
+    existing-row-check pattern sync_skillselect_rounds (pipeline.py) uses
+    for eoi_rounds — so re-running the seed (e.g. every `python -m koshi`
+    invocation) doesn't manufacture duplicate rows.
+    """
+    rows = load_ceiling_usage_seed(path)
+
+    new_rows = []
+    for row in rows:
+        existing = session.scalar(
+            select(CeilingUsage).where(
+                CeilingUsage.occupation_code == row.occupation_code,
+                CeilingUsage.program_year == row.program_year,
+                CeilingUsage.as_of_date == row.as_of_date,
+            )
+        )
+        if existing is not None:
+            continue
+        session.add(row)
+        new_rows.append(row)
+    session.commit()
+    return new_rows

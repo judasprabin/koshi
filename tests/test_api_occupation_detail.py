@@ -1,4 +1,5 @@
 import datetime as dt
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -7,6 +8,11 @@ from koshi.db import get_session
 from koshi.main import app
 from koshi.models.ceiling_usage import CeilingUsage
 from koshi.models.occupations import Occupation
+from koshi.seeds.loader import seed_ceiling_usage
+
+CEILING_USAGE_SEED_PATH = (
+    Path(__file__).parent.parent / "src" / "koshi" / "seeds" / "ceiling_usage_manual.yaml"
+)
 
 
 @pytest.fixture()
@@ -70,3 +76,41 @@ def test_get_occupation_404_for_unknown_code(client):
     response = client.get("/v1/occupations/999999")
 
     assert response.status_code == 404
+
+
+def test_seeded_ceiling_usage_is_actually_servable_end_to_end(db_session, client):
+    """Regression for Fix 5: nothing previously persisted the rows
+    load_ceiling_usage_seed produced, so a fresh install following the
+    README had no ceiling_usage rows and every occupation 404'd. This seeds
+    via seed_ceiling_usage (the real shipped seed file) rather than
+    inserting a CeilingUsage row by hand."""
+    # The shipped seed file covers both 261313 and 254499 — every occupation
+    # code it references must already exist to satisfy ceiling_usage's FK.
+    db_session.add_all(
+        [
+            Occupation(
+                code="261313", name="Software Engineer", unit_group="2613",
+                source_url="https://www.jobsandskills.gov.au/data/occupation-and-industry-profiles/occupations-anzsco",
+                retrieved_at=dt.datetime(2026, 8, 1, tzinfo=dt.timezone.utc),
+                reliability_tier="official_scraped",
+            ),
+            Occupation(
+                code="254499", name="Registered Nurse (Aged Care)", unit_group="2544",
+                source_url="https://www.jobsandskills.gov.au/data/occupation-and-industry-profiles/occupations-anzsco",
+                retrieved_at=dt.datetime(2026, 8, 1, tzinfo=dt.timezone.utc),
+                reliability_tier="official_scraped",
+            ),
+        ]
+    )
+    db_session.commit()
+
+    new_rows = seed_ceiling_usage(db_session, CEILING_USAGE_SEED_PATH)
+    assert len(new_rows) >= 1
+
+    response = client.get("/v1/occupations/261313")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ceiling_issued"]["value"] == 3200
+    assert body["ceiling_cap"]["value"] == 5000
+    assert body["places_left"] == 1800
