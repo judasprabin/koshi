@@ -22,9 +22,9 @@ def upgrade() -> None:
         sa.Column("domain", sa.String, nullable=False),
         sa.Column("category", sa.String, nullable=False),
         sa.Column("content_hash", sa.String, nullable=False),
-        sa.Column("first_seen_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
-        sa.Column("last_checked_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
-        sa.Column("last_changed_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+        sa.Column("first_seen_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column("last_checked_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column("last_changed_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("status", sa.String, nullable=False, server_default="active"),
     )
 
