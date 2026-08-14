@@ -38,7 +38,7 @@ no "whose data is this" question to answer. See
 
 ## Local development
 
-1. Install and start Postgres 16 — e.g. via Homebrew: `brew install postgresql@16 && brew services start postgresql@16`. (A `docker-compose.yml` is also provided if you prefer running Postgres in a container instead — either works, since both end up serving the same `postgresql+psycopg://koshi:koshi@localhost:5432/...` connection the app expects.)
+1. Install and start Postgres 16 — e.g. via Homebrew: `brew install postgresql@16 && brew services start postgresql@16`. (A `docker-compose.yml` is also provided if you prefer running Postgres in a container instead — either works, since both end up serving the same `postgresql+psycopg://koshi:koshi@localhost:5432/...` connection the app expects. Note `docker compose up -d` only auto-creates the `koshi` database via `POSTGRES_DB` — you still need to create `koshi_test` yourself: `docker compose exec postgres createdb -U koshi koshi_test`.)
 2. Create the `koshi` role and the `koshi`/`koshi_test` databases, owned by that role, with password `koshi`.
 3. `pip install -e ".[dev]"`
 4. `DATABASE_URL=postgresql+psycopg://koshi:koshi@localhost:5432/koshi alembic upgrade head`

@@ -73,3 +73,14 @@ def test_list_occupations_defaults_to_code_order(db_session, client):
 
     codes_in_order = [item["code"] for item in response.json()]
     assert codes_in_order == ["254499", "261313"]  # lexical code order
+
+
+def test_list_occupations_rejects_unrecognized_sort_value(db_session, client):
+    """sort is a Literal["code", "momentum"] — an unrecognized value must
+    422, not silently fall back to code order (the bare-str version of this
+    endpoint would have done the latter)."""
+    _seed_two_occupations_with_momentum(db_session)
+
+    response = client.get("/v1/occupations?sort=bogus")
+
+    assert response.status_code == 422

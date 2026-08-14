@@ -1,3 +1,5 @@
+from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -17,7 +19,7 @@ _MOMENTUM_SORT_ORDER = {"rising": 0, "steady": 1, "falling": 2}
 
 @router.get("", response_model=list[OccupationListItem])
 def list_occupations(
-    sort: str = "code", session: Session = Depends(get_session)
+    sort: Literal["code", "momentum"] = "code", session: Session = Depends(get_session)
 ) -> list[OccupationListItem]:
     occupations = session.scalars(select(Occupation).order_by(Occupation.code)).all()
 
