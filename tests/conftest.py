@@ -8,6 +8,7 @@ import koshi.models.source_pages  # noqa: F401
 import koshi.models.occupations  # noqa: F401
 import koshi.models.eoi_rounds  # noqa: F401
 import koshi.models.ceiling_usage  # noqa: F401
+import koshi.models.occupation_momentum  # noqa: F401
 
 TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL", "postgresql+psycopg://koshi:koshi@localhost:5432/koshi_test"
