@@ -1,0 +1,14 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: koshi
+      POSTGRES_PASSWORD: koshi
+      POSTGRES_DB: koshi
+    ports:
+      - "5432:5432"
+    volumes:
+      - koshi_pgdata:/var/lib/postgresql/data
+
+volumes:
+  koshi_pgdata:
