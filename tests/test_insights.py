@@ -1,3 +1,5 @@
+import pytest
+
 from koshi.insights import generate_ceiling_insight
 
 BANNED_PHRASES = [
@@ -29,3 +31,17 @@ def test_ceiling_insight_reports_correct_numbers():
 def test_ceiling_insight_reports_percent_used():
     text = generate_ceiling_insight(issued=2500, ceiling=5000, direction="steady")
     assert "50%" in text
+
+
+def test_ceiling_insight_omits_trend_sentence_when_direction_is_none():
+    # Fewer than three eoi_rounds exist yet — no trend claim may be
+    # fabricated (regulatory posture: only published facts, never invented).
+    text = generate_ceiling_insight(issued=2500, ceiling=5000, direction=None)
+    lowered = text.lower()
+    assert "round" not in lowered
+    assert "threshold has" not in lowered
+
+
+def test_ceiling_insight_rejects_unrecognized_direction():
+    with pytest.raises(ValueError):
+        generate_ceiling_insight(issued=2500, ceiling=5000, direction="sideways")

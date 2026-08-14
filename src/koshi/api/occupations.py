@@ -65,7 +65,7 @@ def get_occupation(code: str, session: Session = Depends(get_session)) -> Occupa
     insight = generate_ceiling_insight(
         issued=latest_ceiling.issued,
         ceiling=latest_ceiling.ceiling,
-        direction=latest_momentum.direction if latest_momentum else "steady",
+        direction=latest_momentum.direction if latest_momentum else None,
     )
 
     return OccupationProfile(
