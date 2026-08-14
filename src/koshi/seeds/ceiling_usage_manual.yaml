@@ -1,0 +1,17 @@
+# Manually curated against the Migration Program planning levels report
+# (design spec §4/§5 tier 5 — this page is a periodic PDF, not a scrapable
+# table; values entered by hand and cited, reviewed on the cadence §11 sets).
+- occupation_code: "261313"
+  program_year: "2025-26"
+  issued: 3200
+  ceiling: 5000
+  as_of_date: "2026-07-31"
+  source_url: "https://immi.homeaffairs.gov.au/what-we-do/migration-program-planning-levels"
+  retrieved_at: "2026-08-01T00:00:00+00:00"
+- occupation_code: "254499"
+  program_year: "2025-26"
+  issued: 1800
+  ceiling: 4000
+  as_of_date: "2026-07-31"
+  source_url: "https://immi.homeaffairs.gov.au/what-we-do/migration-program-planning-levels"
+  retrieved_at: "2026-08-01T00:00:00+00:00"
