@@ -12,7 +12,9 @@ ROUND_DATE_RE = re.compile(r"Round date:\s*(\d{1,2} \w+ \d{4})")
 def parse_skillselect_rounds(
     html: str, *, visa_code: str, source_url: str, retrieved_at: dt.datetime
 ) -> list[EoiRound]:
-    require_provenance(reliability_tier="official_scraped", source_url=source_url)
+    require_provenance(
+        reliability_tier="official_scraped", source_url=source_url, retrieved_at=retrieved_at
+    )
 
     soup = BeautifulSoup(html, "lxml")
     date_match = ROUND_DATE_RE.search(soup.get_text())

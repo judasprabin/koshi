@@ -45,3 +45,8 @@ def test_ceiling_insight_omits_trend_sentence_when_direction_is_none():
 def test_ceiling_insight_rejects_unrecognized_direction():
     with pytest.raises(ValueError):
         generate_ceiling_insight(issued=2500, ceiling=5000, direction="sideways")
+
+
+def test_ceiling_insight_rejects_zero_ceiling_instead_of_dividing_by_zero():
+    with pytest.raises(ValueError):
+        generate_ceiling_insight(issued=0, ceiling=0, direction=None)

@@ -34,7 +34,18 @@ def upgrade() -> None:
         sa.Column("last_extracted_at", sa.DateTime(timezone=True), nullable=True),
     )
 
+    # Fix 4: reject nonsensical ceiling data at the DB layer, mirroring the
+    # seeds/loader.py check — issued can't exceed ceiling, and ceiling
+    # can't be zero/negative (the latter also guards against
+    # ZeroDivisionError in generate_ceiling_insight).
+    op.create_check_constraint(
+        "ck_ceiling_usage_issued_within_ceiling",
+        "ceiling_usage",
+        "issued <= ceiling AND ceiling > 0",
+    )
+
 
 def downgrade() -> None:
+    op.drop_constraint("ck_ceiling_usage_issued_within_ceiling", "ceiling_usage", type_="check")
     op.drop_column("source_pages", "last_extracted_at")
     op.drop_constraint("uq_eoi_rounds_visa_occupation_round_date", "eoi_rounds", type_="unique")

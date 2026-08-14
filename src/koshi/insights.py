@@ -29,7 +29,15 @@ def generate_ceiling_insight(*, issued: int, ceiling: int, direction: str | None
         A plain-language insight describing the ceiling usage and, when a
         real trend is known, the trend — using only factual statements with
         no migration advice.
+
+    Raises:
+        ValueError: if ceiling <= 0 — such data is nonsensical (and would
+            otherwise raise an unhandled ZeroDivisionError below) and should
+            have been rejected earlier, at the seed loader / DB layer.
     """
+    if ceiling <= 0:
+        raise ValueError(f"ceiling must be > 0, got {ceiling!r}")
+
     places_left = ceiling - issued
     pct_used = round(issued / ceiling * 100)
 

@@ -9,7 +9,9 @@ from koshi.provenance import require_provenance
 def parse_anzsco_occupations(
     html: str, *, source_url: str, retrieved_at: dt.datetime
 ) -> list[Occupation]:
-    require_provenance(reliability_tier="official_scraped", source_url=source_url)
+    require_provenance(
+        reliability_tier="official_scraped", source_url=source_url, retrieved_at=retrieved_at
+    )
 
     soup = BeautifulSoup(html, "lxml")
     table = soup.find("table", id="occupation-list")
