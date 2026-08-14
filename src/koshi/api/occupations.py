@@ -50,8 +50,10 @@ def get_occupation(code: str, session: Session = Depends(get_session)) -> Occupa
     latest_ceiling = session.scalar(
         select(CeilingUsage).where(CeilingUsage.occupation_code == code).order_by(CeilingUsage.as_of_date.desc())
     )
-    if latest_ceiling is None:
-        raise HTTPException(status_code=404, detail=f"no ceiling data for {code!r} yet")
+    # No CeilingUsage row yet is a data gap, not a missing resource — the
+    # occupation itself was found, so this returns 200 with the
+    # ceiling-derived fields null instead of 404ing (Fix 6). 404 is
+    # reserved strictly for "this occupation code doesn't exist at all".
 
     latest_round = session.scalar(
         select(EoiRound).where(EoiRound.occupation_code == code).order_by(EoiRound.round_date.desc())
@@ -62,29 +64,41 @@ def get_occupation(code: str, session: Session = Depends(get_session)) -> Occupa
         .order_by(OccupationMomentum.computed_at.desc())
     )
 
-    insight = generate_ceiling_insight(
-        issued=latest_ceiling.issued,
-        ceiling=latest_ceiling.ceiling,
-        direction=latest_momentum.direction if latest_momentum else None,
+    insight = (
+        generate_ceiling_insight(
+            issued=latest_ceiling.issued,
+            ceiling=latest_ceiling.ceiling,
+            direction=latest_momentum.direction if latest_momentum else None,
+        )
+        if latest_ceiling
+        else None
     )
 
     return OccupationProfile(
         code=occupation.code,
         name=occupation.name,
         unit_group=occupation.unit_group,
-        ceiling_issued=SourcedFact(
-            value=latest_ceiling.issued,
-            reliability_tier=latest_ceiling.reliability_tier,
-            retrieved_at=latest_ceiling.retrieved_at,
-            source_url=latest_ceiling.source_url,
+        ceiling_issued=(
+            SourcedFact(
+                value=latest_ceiling.issued,
+                reliability_tier=latest_ceiling.reliability_tier,
+                retrieved_at=latest_ceiling.retrieved_at,
+                source_url=latest_ceiling.source_url,
+            )
+            if latest_ceiling
+            else None
         ),
-        ceiling_cap=SourcedFact(
-            value=latest_ceiling.ceiling,
-            reliability_tier=latest_ceiling.reliability_tier,
-            retrieved_at=latest_ceiling.retrieved_at,
-            source_url=latest_ceiling.source_url,
+        ceiling_cap=(
+            SourcedFact(
+                value=latest_ceiling.ceiling,
+                reliability_tier=latest_ceiling.reliability_tier,
+                retrieved_at=latest_ceiling.retrieved_at,
+                source_url=latest_ceiling.source_url,
+            )
+            if latest_ceiling
+            else None
         ),
-        places_left=latest_ceiling.ceiling - latest_ceiling.issued,
+        places_left=(latest_ceiling.ceiling - latest_ceiling.issued) if latest_ceiling else None,
         latest_threshold=(
             SourcedFact(
                 value=latest_round.threshold_points,

@@ -14,12 +14,15 @@ class OccupationProfile(BaseModel):
     code: str
     name: str
     unit_group: str
-    ceiling_issued: SourcedFact
-    ceiling_cap: SourcedFact
-    places_left: int
+    # Nullable: an occupation can exist (found by code) with no
+    # CeilingUsage row yet — a data gap, not a missing resource, so the
+    # endpoint returns 200 with these null rather than 404ing (Fix 6).
+    ceiling_issued: SourcedFact | None
+    ceiling_cap: SourcedFact | None
+    places_left: int | None
     latest_threshold: SourcedFact | None
     momentum: str | None
-    insight: str
+    insight: str | None
 
 
 class OccupationListItem(BaseModel):

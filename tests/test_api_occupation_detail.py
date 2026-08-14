@@ -78,6 +78,32 @@ def test_get_occupation_404_for_unknown_code(client):
     assert response.status_code == 404
 
 
+def test_get_occupation_returns_200_with_nulls_when_no_ceiling_data_yet(db_session, client):
+    """Fix 6: an occupation existing with no CeilingUsage row yet is a data
+    gap, not a missing resource — 404 is reserved for an unknown occupation
+    code (see test_get_occupation_404_for_unknown_code above)."""
+    db_session.add(
+        Occupation(
+            code="261313", name="Software Engineer", unit_group="2613",
+            source_url="https://www.jobsandskills.gov.au/data/occupation-and-industry-profiles/occupations-anzsco",
+            retrieved_at=dt.datetime(2026, 8, 1, tzinfo=dt.timezone.utc),
+            reliability_tier="official_scraped",
+        )
+    )
+    db_session.commit()
+
+    response = client.get("/v1/occupations/261313")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["code"] == "261313"
+    assert body["ceiling_issued"] is None
+    assert body["ceiling_cap"] is None
+    assert body["places_left"] is None
+    assert body["insight"] is None
+    assert body["momentum"] is None
+
+
 def test_seeded_ceiling_usage_is_actually_servable_end_to_end(db_session, client):
     """Regression for Fix 5: nothing previously persisted the rows
     load_ceiling_usage_seed produced, so a fresh install following the
