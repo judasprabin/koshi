@@ -2,7 +2,9 @@ import datetime as dt
 
 import httpx
 import pytest
+from sqlalchemy.orm import sessionmaker
 
+from koshi.db import Base
 from koshi.models.eoi_rounds import EoiRound
 from koshi.models.occupations import Occupation
 from koshi.models.source_pages import SourcePage
@@ -51,12 +53,45 @@ BROKEN_ROUNDS_FIXTURE = b"""
 </table>
 """
 
+# Same (visa_code, occupation_code, round_date) key appears twice within a
+# single page — a real possibility in messy government HTML tables — to
+# reproduce the in-batch duplicate crash (Fix B).
+ROUNDS_FIXTURE_WITH_IN_BATCH_DUPLICATE = b"""
+<p>Round date: 24 July 2026</p>
+<table id="round-results">
+  <thead><tr><th>Occupation</th><th>Points Threshold</th><th>Invitations Issued</th></tr></thead>
+  <tbody>
+    <tr><td>261313</td><td>85</td><td>120</td></tr>
+    <tr><td>261313</td><td>85</td><td>120</td></tr>
+  </tbody>
+</table>
+"""
+
 
 def _client_returning(body: bytes) -> httpx.Client:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=body)
 
     return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+@pytest.fixture()
+def db_session_no_autoflush(engine):
+    # Mirrors koshi.db.SessionLocal's exact settings (autoflush=False,
+    # autocommit=False) — tests/conftest.py's shared `db_session` fixture
+    # uses sessionmaker's default autoflush=True, which would flush each
+    # session.add() before the next iteration's SELECT and mask the
+    # in-batch duplicate bug entirely. Constructed deliberately here so
+    # this stays a real regression test for the production session's
+    # behaviour rather than the test suite's.
+    Session = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+    session = Session()
+    yield session
+    session.rollback()
+    for table in reversed(Base.metadata.sorted_tables):
+        session.execute(table.delete())
+    session.commit()
+    session.close()
 
 
 def test_sync_anzsco_occupations_persists_on_first_run(db_session):
@@ -134,3 +169,25 @@ def test_sync_retries_parse_after_a_previous_failure(db_session):
     assert len(result) == 1
     page = db_session.query(SourcePage).filter_by(url=SKILLSELECT_ROUNDS_URL).one()
     assert page.last_extracted_at is not None
+
+
+def test_sync_skillselect_rounds_dedups_in_batch_duplicate_rows(db_session_no_autoflush):
+    # Reproduces the crash under the app's real session settings
+    # (autoflush=False, like koshi.db.SessionLocal): without in-batch
+    # dedup, both identical rows would pass the "not found in DB" check
+    # (session.add() is never flushed before the next SELECT), both would
+    # be queued, and the commit would raise an unhandled UniqueViolation —
+    # rolling back the whole sync instead of just skipping the duplicate.
+    sync_anzsco_occupations(db_session_no_autoflush, client=_client_returning(ANZSCO_FIXTURE))
+
+    result = sync_skillselect_rounds(
+        db_session_no_autoflush, client=_client_returning(ROUNDS_FIXTURE_WITH_IN_BATCH_DUPLICATE)
+    )
+
+    assert len(result) == 1  # the in-batch duplicate was skipped, not crashed on
+    rows = (
+        db_session_no_autoflush.query(EoiRound)
+        .filter_by(occupation_code="261313", round_date=dt.date(2026, 7, 24))
+        .all()
+    )
+    assert len(rows) == 1  # exactly one row persisted — not zero, not two

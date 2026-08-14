@@ -82,8 +82,23 @@ def sync_skillselect_rounds(
     # Upsert by (visa_code, occupation_code, round_date): a whole-page hash
     # change (build stamp, "last reviewed" date) re-parses the same round
     # data and must not manufacture duplicate rows / fake momentum.
+    #
+    # The DB existence check alone isn't enough to dedup rows *within* this
+    # same batch: the production session (koshi.db.SessionLocal) sets
+    # autoflush=False, so an earlier session.add() in this loop is never
+    # flushed before the next iteration's SELECT runs. If a single scraped
+    # page contains two rows with an identical (visa_code, occupation_code,
+    # round_date) — plausible in messy government HTML tables — both would
+    # pass the "not found in DB" check, both would be queued, and the
+    # batch commit below would then raise an unhandled UniqueViolation,
+    # rolling back every valid new round from that page. Tracking keys
+    # already staged in this call closes that gap.
     new_rounds = []
+    staged_keys: set[tuple[str, str | None, dt.date]] = set()
     for round_ in rounds:
+        key = (round_.visa_code, round_.occupation_code, round_.round_date)
+        if key in staged_keys:
+            continue
         existing = session.scalar(
             select(EoiRound).where(
                 EoiRound.visa_code == round_.visa_code,
@@ -94,6 +109,7 @@ def sync_skillselect_rounds(
         if existing is not None:
             continue
         session.add(round_)
+        staged_keys.add(key)
         new_rounds.append(round_)
     # Only advance the extraction watermark once parsing AND persisting
     # have both succeeded — see sync_anzsco_occupations above.
