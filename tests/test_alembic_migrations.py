@@ -80,7 +80,16 @@ def _alembic_config(database_url: str) -> Config:
     return config
 
 
-def test_alembic_upgrade_head_has_no_drift_against_models(migration_test_db_url):
+def test_alembic_upgrade_head_has_no_drift_against_models(migration_test_db_url, monkeypatch):
+    # alembic/env.py unconditionally overwrites config.set_main_option(
+    # "sqlalchemy.url", ...) with os.environ.get("DATABASE_URL", ...) on
+    # every invocation, which would clobber the Config-object override
+    # below and silently run the migration against whatever DATABASE_URL
+    # happens to be set to (or the real "koshi" DB if unset) instead of
+    # this test's scratch database. Setting the environment variable
+    # itself is what actually lands the migration on the scratch DB.
+    monkeypatch.setenv("DATABASE_URL", migration_test_db_url)
+
     config = _alembic_config(migration_test_db_url)
 
     command.upgrade(config, "head")
