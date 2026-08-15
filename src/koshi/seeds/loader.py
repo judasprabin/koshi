@@ -24,10 +24,21 @@ def load_seed_rows(path: Path, *, row_builder: Callable[[dict], Any]) -> tuple[l
     entries = yaml.safe_load(path.read_text())
     rows = []
     skipped = 0
-    for index, entry in enumerate(entries):
+    # entries or [] guards an empty/comment-only YAML file: yaml.safe_load
+    # returns None in that case, and enumerate(None) raises TypeError
+    # before the per-entry handler below ever gets a chance to run.
+    for index, entry in enumerate(entries or []):
         try:
             rows.append(row_builder(entry))
-        except (KeyError, ValueError) as exc:
+        except Exception as exc:
+            # Deliberately broad: this is a soft-fail boundary (skip one
+            # entry, keep going), and row_builder can raise more than just
+            # KeyError/ValueError — e.g. a quoted-string curation typo like
+            # `issued: "3200"` makes the `ceiling <= 0`/`issued > ceiling`
+            # comparisons raise TypeError. Catching narrowly here would let
+            # that TypeError escape and abort the whole file, contradicting
+            # this function's own promise that one bad entry shouldn't
+            # block the rest of the seed.
             logger.warning("skipping seed entry %d in %s: %r", index, path.name, exc)
             skipped += 1
     return rows, skipped

@@ -68,6 +68,49 @@ def test_skips_invalid_row_but_loads_other_valid_rows_in_the_same_file(tmp_path)
     assert rows[0].occupation_code == "254499"
 
 
+def test_skips_row_with_a_quoted_string_issued_value_but_loads_other_valid_rows(tmp_path):
+    # A common real curation typo: `issued: "3200"` (quoted, so YAML loads
+    # it as a str) makes the `issued > ceiling` comparison raise TypeError
+    # (str > int), not KeyError/ValueError. This must still be caught by
+    # the per-entry handler and skipped, not abort the whole file.
+    seed_file = tmp_path / "quoted_issued.yaml"
+    seed_file.write_text(
+        """
+- occupation_code: "261313"
+  program_year: "2025-26"
+  issued: "3200"
+  ceiling: 5000
+  as_of_date: "2026-07-31"
+  source_url: "https://immi.homeaffairs.gov.au/what-we-do/migration-program-planning-levels"
+  retrieved_at: "2026-08-01T00:00:00+00:00"
+- occupation_code: "254499"
+  program_year: "2025-26"
+  issued: 1800
+  ceiling: 4000
+  as_of_date: "2026-07-31"
+  source_url: "https://immi.homeaffairs.gov.au/what-we-do/migration-program-planning-levels"
+  retrieved_at: "2026-08-01T00:00:00+00:00"
+"""
+    )
+
+    rows = load_ceiling_usage_seed(seed_file)
+
+    assert len(rows) == 1
+    assert rows[0].occupation_code == "254499"
+
+
+def test_empty_seed_file_loads_as_zero_rows_without_raising(tmp_path):
+    # yaml.safe_load("") (or a comment-only file) returns None, and
+    # enumerate(None) raises TypeError before the per-entry handler even
+    # runs — load_seed_rows must guard against this rather than crash.
+    seed_file = tmp_path / "empty.yaml"
+    seed_file.write_text("# nothing to see here\n")
+
+    rows = load_ceiling_usage_seed(seed_file)
+
+    assert rows == []
+
+
 def test_skips_row_where_issued_exceeds_ceiling_but_loads_other_valid_rows(tmp_path):
     seed_file = tmp_path / "issued_exceeds_ceiling.yaml"
     seed_file.write_text(
