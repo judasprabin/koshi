@@ -1,4 +1,5 @@
 import datetime as dt
+import logging
 
 import httpx
 from sqlalchemy import select
@@ -11,6 +12,8 @@ from koshi.models.eoi_rounds import EoiRound
 from koshi.models.occupations import Occupation
 from koshi.models.source_pages import SourcePage
 from koshi.momentum import refresh_momentum
+
+logger = logging.getLogger(__name__)
 
 ANZSCO_URL = "https://www.jobsandskills.gov.au/data/occupation-and-industry-profiles/occupations-anzsco"
 SKILLSELECT_ROUNDS_URL = "https://immi.homeaffairs.gov.au/visas/working-in-australia/skillselect/invitation-rounds"
@@ -46,17 +49,19 @@ def sync_anzsco_occupations(
     if not _needs_extraction(page):
         return []
 
-    occupations = parse_anzsco_occupations(
+    result = parse_anzsco_occupations(
         text, source_url=url, retrieved_at=dt.datetime.now(dt.timezone.utc)
     )
-    for occupation in occupations:
+    if result.skipped:
+        logger.warning("anzsco_occupations: skipped %d malformed row(s)", result.skipped)
+    for occupation in result.rows:
         session.merge(occupation)
     # Only advance the extraction watermark once parsing AND persisting
     # have both succeeded — if parse_anzsco_occupations raised above, this
     # line (and the commit) never runs, so the next sync retries.
     page.last_extracted_at = dt.datetime.now(dt.timezone.utc)
     session.commit()
-    return occupations
+    return result.rows
 
 
 def sync_skillselect_rounds(
@@ -72,12 +77,14 @@ def sync_skillselect_rounds(
     if not _needs_extraction(page):
         return []
 
-    rounds = parse_skillselect_rounds(
+    parse_result = parse_skillselect_rounds(
         text,
         visa_code=visa_code,
         source_url=url,
         retrieved_at=dt.datetime.now(dt.timezone.utc),
     )
+    if parse_result.skipped:
+        logger.warning("skillselect_rounds: skipped %d malformed row(s)", parse_result.skipped)
 
     # Upsert by (visa_code, occupation_code, round_date): a whole-page hash
     # change (build stamp, "last reviewed" date) re-parses the same round
@@ -95,7 +102,7 @@ def sync_skillselect_rounds(
     # already staged in this call closes that gap.
     new_rounds = []
     staged_keys: set[tuple[str, str | None, dt.date]] = set()
-    for round_ in rounds:
+    for round_ in parse_result.rows:
         key = (round_.visa_code, round_.occupation_code, round_.round_date)
         if key in staged_keys:
             continue
