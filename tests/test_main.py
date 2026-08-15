@@ -1,0 +1,96 @@
+import koshi.__main__ as main_module
+
+
+class _FakeSession:
+    """Stands in for SessionLocal() in these tests — the sync/seed
+    functions are monkeypatched below and never touch it, so a real DB
+    connection isn't needed to test main()'s control flow."""
+
+    def rollback(self):
+        pass
+
+    def close(self):
+        pass
+
+
+def test_main_returns_0_when_all_steps_succeed(monkeypatch):
+    monkeypatch.setattr(main_module, "SessionLocal", lambda: _FakeSession())
+    monkeypatch.setattr(main_module, "sync_anzsco_occupations", lambda session: [1, 2])
+    monkeypatch.setattr(main_module, "sync_skillselect_rounds", lambda session: [1])
+    monkeypatch.setattr(main_module, "seed_ceiling_usage", lambda session, path: [1, 2, 3])
+
+    exit_code = main_module.main()
+
+    assert exit_code == 0
+
+
+def test_main_returns_2_and_still_runs_remaining_steps_when_one_step_fails(monkeypatch):
+    calls = []
+
+    def failing_sync(session):
+        calls.append("anzsco")
+        raise RuntimeError("boom")
+
+    def ok_sync(session):
+        calls.append("skillselect")
+        return [1]
+
+    def ok_seed(session, path):
+        calls.append("ceiling")
+        return [1]
+
+    monkeypatch.setattr(main_module, "SessionLocal", lambda: _FakeSession())
+    monkeypatch.setattr(main_module, "sync_anzsco_occupations", failing_sync)
+    monkeypatch.setattr(main_module, "sync_skillselect_rounds", ok_sync)
+    monkeypatch.setattr(main_module, "seed_ceiling_usage", ok_seed)
+
+    exit_code = main_module.main()
+
+    assert exit_code == 2
+    assert calls == ["anzsco", "skillselect", "ceiling"]
+
+
+def test_main_returns_3_when_all_steps_fail(monkeypatch):
+    def failing(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(main_module, "SessionLocal", lambda: _FakeSession())
+    monkeypatch.setattr(main_module, "sync_anzsco_occupations", failing)
+    monkeypatch.setattr(main_module, "sync_skillselect_rounds", failing)
+    monkeypatch.setattr(main_module, "seed_ceiling_usage", failing)
+
+    exit_code = main_module.main()
+
+    assert exit_code == 3
+
+
+def test_main_returns_1_when_session_initialization_fails(monkeypatch):
+    def failing_session_local():
+        raise RuntimeError("cannot connect")
+
+    monkeypatch.setattr(main_module, "SessionLocal", failing_session_local)
+
+    exit_code = main_module.main()
+
+    assert exit_code == 1
+
+
+def test_main_writes_a_run_summary_reflecting_each_steps_outcome(monkeypatch):
+    written = {}
+
+    def fake_write_run_summary(summary):
+        written["summary"] = summary
+        return "fake-path"
+
+    monkeypatch.setattr(main_module, "SessionLocal", lambda: _FakeSession())
+    monkeypatch.setattr(main_module, "sync_anzsco_occupations", lambda session: [1])
+    monkeypatch.setattr(main_module, "sync_skillselect_rounds", lambda session: [])
+    monkeypatch.setattr(main_module, "seed_ceiling_usage", lambda session, path: [])
+    monkeypatch.setattr(main_module, "write_run_summary", fake_write_run_summary)
+
+    main_module.main()
+
+    assert "summary" in written
+    assert written["summary"]["steps"][0] == {"name": "anzsco_occupations", "status": "ok", "count": 1}
+    assert written["summary"]["steps"][1] == {"name": "skillselect_rounds", "status": "ok", "count": 0}
+    assert written["summary"]["steps"][2] == {"name": "ceiling_usage_seed", "status": "ok", "count": 0}
