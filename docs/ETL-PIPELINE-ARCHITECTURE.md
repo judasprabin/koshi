@@ -1,5 +1,15 @@
 # koshi — ETL Pipeline Architecture
 
+> **⚠️ Superseded.** This doc was produced independently, concurrently with
+> [`docs/superpowers/specs/2026-08-15-koshi-etl-finalization-design.md`](superpowers/specs/2026-08-15-koshi-etl-finalization-design.md),
+> which reconciles the two (see that doc's §0 for exactly what disagreed and
+> why) and is now the source of truth for koshi's ETL design. Kept here,
+> unmodified, because §2 (industry survey) and §12 (tooling comparisons) are
+> genuinely useful research the merged doc condenses rather than repeats in
+> full. Everything else in this file — tier assignments, sequencing, the
+> deployment/scheduling sections — reflects a design that was **not** what
+> got confirmed; don't build against it.
+
 **Status:** Architecture research & technical review — August 2026
 **Author:** Technical review of `judasprabin/koshi` + `research/au-visa-sources`
 **Purpose:** Complete ETL pipeline design for Australian skilled-migration data extraction, transformation, and serving.
