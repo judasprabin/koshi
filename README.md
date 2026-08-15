@@ -25,16 +25,31 @@ No end-user JWT anywhere in this service — the data isn't personal, so there's
 no "whose data is this" question to answer. See
 [docs/superpowers/specs/](docs/superpowers/specs/) for the full design.
 
+## Documentation
+
+| Doc | What's in it |
+|-----|--------------|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Component diagrams, data model (ER diagram), the extraction-watermark design, what's real vs. spec-only |
+| [docs/API.md](docs/API.md) | Every endpoint, request/response examples, the `SourcedFact`/`DerivedFact` contract |
+| [docs/data-sources.md](docs/data-sources.md) | Every data source koshi's design targets, which ones have real extraction code today, and which remain spec-only |
+| [docs/superpowers/specs/](docs/superpowers/specs/) | The original design spec (full intended scope — broader than what's built) |
+
 ## Architecture
 
-| Layer | Choice |
-|-------|--------|
-| Discovery & crawling | Owned by koshi — crawls its own 19-domain source list, hashes pages for change-detection, stores the registry in Postgres (`source_pages`) |
-| Extraction | Tiered: deterministic HTML/table parsers, PDF parsers, Claude fallback for non-templated pages, manual curation where a real source isn't cleanly scrapable |
-| Backend | FastAPI, Python 3.11+ |
-| Data | Cloud SQL Postgres (shares an instance with saathi/manaslu, separate database) |
-| Auth | Cloud Run IAM invoker only — no end-user identity |
-| Deploy | Cloud Run · GitHub Actions (WIF) · Terraform in `karki-labs-infra` |
+The design spec targets a larger system than what's built today (see
+"What's real vs. what's specified but not built" in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#9-whats-real-vs-whats-specified-but-not-built)).
+This table describes the design's full intended shape; ✅/⏳ marks what's
+actually implemented right now.
+
+| Layer | Design | Today |
+|-------|--------|-------|
+| Discovery & crawling | Owned by koshi — crawls its own source list, hashes pages for change-detection, stores the registry in Postgres (`source_pages`) | ✅ Built (`crawler/fetch.py`), pointed at 2 real pages so far |
+| Extraction | Tiered: deterministic HTML/table parsers, PDF parsers, Claude fallback for non-templated pages, manual curation where a real source isn't cleanly scrapable | ✅ Deterministic parsers + manual curation. ⏳ PDF and Claude-fallback tiers not built (not yet needed) |
+| Backend | FastAPI, Python 3.11+ | ✅ |
+| Data | Cloud SQL Postgres (shares an instance with saathi/manaslu, separate database) | ⏳ Local Postgres only — Cloud SQL deliberately deferred, see the note just below the table |
+| Auth | Cloud Run IAM invoker only — no end-user identity | ⏳ No auth at all locally (nothing to invoke yet); the "no end-user identity" part is already true and permanent |
+| Deploy | Cloud Run · GitHub Actions (WIF) · Terraform in `karki-labs-infra` | ⏳ Not deployed anywhere yet — `python -m koshi` + `uvicorn` locally only |
 
 ## Local development
 
@@ -47,6 +62,15 @@ no "whose data is this" question to answer. See
 7. `uvicorn koshi.main:app --reload` — serves the API at `http://localhost:8000/v1`, docs at `/v1/docs`
 
 No Cloud SQL, no Terraform, no Cloud Run needed for local development — see the design spec §9/§11 for why that's deliberate, not a shortcut.
+
+### Try it
+
+```bash
+curl http://localhost:8000/v1/occupations
+curl http://localhost:8000/v1/occupations/261313   # Software Engineer, if step 5 above has run
+```
+
+Full endpoint reference with example responses: [docs/API.md](docs/API.md).
 
 ## Related repos
 
