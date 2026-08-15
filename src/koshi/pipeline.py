@@ -136,6 +136,16 @@ def sync_skillselect_rounds(
         try:
             refresh_momentum(session, code)
         except Exception:
+            # Roll back before logging: against the real Postgres-backed
+            # session this codebase uses, a genuine DB-level failure
+            # (constraint violation, stale row, connection hiccup) leaves
+            # the session's transaction deactivated — every subsequent
+            # operation on it raises until rollback() runs. Without this,
+            # the *next* occupation code's refresh_momentum call would
+            # itself raise on the still-poisoned transaction and get
+            # logged as a spurious failure, cascading one real failure
+            # into every occupation processed afterward.
+            session.rollback()
             logger.exception("momentum refresh failed for occupation_code=%s", code)
 
     return new_rounds

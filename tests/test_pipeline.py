@@ -2,7 +2,7 @@ import datetime as dt
 
 import httpx
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import sessionmaker
 
 import koshi.pipeline as pipeline_module
@@ -267,3 +267,107 @@ def test_momentum_refresh_failure_for_one_code_does_not_block_the_other(db_sessi
         select(OccupationMomentum).where(OccupationMomentum.occupation_code == "261313")
     )
     assert failed_momentum is None
+
+
+def test_momentum_refresh_db_level_failure_does_not_cascade_to_the_next_code(
+    db_session_no_autoflush, monkeypatch
+):
+    # Uses the no-autoflush session (mirrors koshi.db.SessionLocal's real
+    # production settings — see the fixture's docstring) because this test
+    # is specifically about the real Postgres transaction's abort/recovery
+    # behaviour, not just a Python-level exception raised before any DB
+    # interaction (that's what test_momentum_refresh_failure_for_one_code_
+    # does_not_block_the_other above already covers).
+    session = db_session_no_autoflush
+    session.add_all([
+        Occupation(
+            code="261313", name="Software Engineer", unit_group="2613",
+            source_url="https://example.gov.au", retrieved_at=dt.datetime.now(dt.timezone.utc),
+            reliability_tier="official_scraped",
+        ),
+        Occupation(
+            code="254499", name="Registered Nurse (Aged Care)", unit_group="2544",
+            source_url="https://example.gov.au", retrieved_at=dt.datetime.now(dt.timezone.utc),
+            reliability_tier="official_scraped",
+        ),
+    ])
+    session.commit()
+
+    # Two prior rounds each, identical trend for both occupations, so the
+    # round this test triggers (each occupation's 3rd) completes
+    # compute_momentum's trailing-3 window with the same expected
+    # direction ("rising") for whichever occupation the loop happens to
+    # process second — see the processed_order comment below for why we
+    # can't pin down which code that is ahead of time.
+    base_date = dt.date(2026, 5, 1)
+    for code in ("261313", "254499"):
+        for i, points in enumerate([70, 75]):
+            session.add(
+                EoiRound(
+                    visa_code="189", occupation_code=code,
+                    round_date=base_date + dt.timedelta(days=30 * i),
+                    threshold_points=points, invitations_issued=100,
+                    source_url="https://immi.homeaffairs.gov.au/visas/working-in-australia/skillselect/invitation-rounds",
+                    retrieved_at=dt.datetime.now(dt.timezone.utc),
+                    reliability_tier="official_scraped",
+                )
+            )
+    session.commit()
+
+    fixture = b"""
+    <p>Round date: 24 July 2026</p>
+    <table id="round-results">
+      <thead><tr><th>Occupation</th><th>Points Threshold</th><th>Invitations Issued</th></tr></thead>
+      <tbody>
+        <tr><td>261313</td><td>85</td><td>120</td></tr>
+        <tr><td>254499</td><td>85</td><td>120</td></tr>
+      </tbody>
+    </table>
+    """
+
+    original_refresh_momentum = pipeline_module.refresh_momentum
+    # sync_skillselect_rounds derives new_codes as a Python set, so we
+    # can't know ahead of time which of the two codes the loop visits
+    # first — record the actual order live instead of hard-coding one.
+    processed_order: list[str] = []
+
+    def flaky_refresh(session, code):
+        processed_order.append(code)
+        if len(processed_order) == 1:
+            # Genuinely poison the session's real Postgres transaction —
+            # not a pre-DB Python exception — the same way a constraint
+            # violation, stale row, or connection hiccup would in
+            # production: a raw statement Postgres itself rejects.
+            session.execute(text("SELECT 1/0"))
+        else:
+            original_refresh_momentum(session, code)
+
+    monkeypatch.setattr(pipeline_module, "refresh_momentum", flaky_refresh)
+
+    def handler(request):
+        return httpx.Response(200, content=fixture)
+
+    result = pipeline_module.sync_skillselect_rounds(
+        session, client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+
+    assert len(result) == 2  # both rounds persisted regardless of momentum outcome
+    assert len(processed_order) == 2  # the loop attempted both codes, not just the first
+    poisoned_code, recovered_code = processed_order
+
+    poisoned_momentum = session.scalar(
+        select(OccupationMomentum).where(OccupationMomentum.occupation_code == poisoned_code)
+    )
+    assert poisoned_momentum is None
+
+    # The point of this test: the code processed AFTER the DB-level
+    # failure must still get its momentum computed correctly. Without
+    # session.rollback() in the except block, this call would itself
+    # raise against the still-aborted transaction, get caught by the same
+    # except, and this occupation would be spuriously reported as failed
+    # too — even though its own data was perfectly fine.
+    recovered_momentum = session.scalar(
+        select(OccupationMomentum).where(OccupationMomentum.occupation_code == recovered_code)
+    )
+    assert recovered_momentum is not None
+    assert recovered_momentum.direction == "rising"
