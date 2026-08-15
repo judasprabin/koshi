@@ -1,10 +1,13 @@
 # koshi — Australian visa landscape data service
 
-**A headless backend service.** koshi extracts, stores, and serves structured,
-sourced facts about the Australian skilled-migration system — occupation
-ceilings, EOI invitation thresholds, state nomination status, processing
-times. No UI, no end-user identity: this is a public-data API, not a
-personalization service.
+**A headless backend service: an ETL pipeline feeding a read-only API.**
+koshi extracts raw government pages, transforms them into structured rows,
+validates and loads them into Postgres, then serves the result as sourced
+facts about the Australian skilled-migration system — occupation ceilings,
+EOI invitation thresholds, state nomination status, processing times. No
+UI, no end-user identity: this is a public-data API, not a personalization
+service. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#2-two-runtime-shapes-one-codebase)
+for exactly how the ETL stages map onto the code.
 
 **Product boundary:** koshi describes the published state of the system. It
 never scores, ranks, or predicts a personal outcome — every response is a

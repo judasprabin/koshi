@@ -36,17 +36,38 @@ deployment will restrict this to Cloud Run IAM invoker identities — see §6).
 koshi has no server-side scheduler yet. It runs as two separate processes,
 both importing the same `src/koshi/` package:
 
-- **Ingestion** — `python -m koshi` (`src/koshi/__main__.py`). A one-shot
-  script: crawl, extract, validate, persist, compute momentum, seed manual
-  data. Run manually today; the design spec's intended production shape is
-  a Cloud Run Job on a schedule (design spec §5) — not built yet.
-- **Serving** — `uvicorn koshi.main:app`. The FastAPI app that answers HTTP
-  requests against whatever ingestion has already persisted. Read-only; it
-  never fetches, parses, or crawls anything itself.
+- **ETL pipeline** — `python -m koshi` (`src/koshi/__main__.py`). A one-shot
+  script that does exactly what "ETL" names: **E**xtract (fetch raw HTML off
+  a government page), **T**ransform (parse it into typed rows, plus derive
+  momentum from rows already stored), **L**oad (persist into Postgres) —
+  with a validation gate (`provenance.py`) in between transform and load.
+  Run manually today; the design spec's intended production shape is a
+  Cloud Run Job on a schedule (design spec §5) — not built yet.
+- **Serving API** — `uvicorn koshi.main:app`. The FastAPI app that answers
+  HTTP requests against whatever the ETL pipeline has already persisted.
+  Read-only; it never fetches, parses, or crawls anything itself. This is
+  the part that isn't ETL — koshi is an ETL pipeline *feeding* a serving
+  API, not ETL alone.
+
+| ETL stage | Module | |
+|---|---|---|
+| **E**xtract | `crawler/fetch.py` | Raw HTTP fetch + content hash, nothing parsed yet |
+| **T**ransform | `extraction/anzsco_occupations.py`, `extraction/skillselect_rounds.py`, `momentum.py` | Raw HTML → typed rows; momentum derives a new fact from rows already loaded |
+| *(validate)* | `provenance.py` | Rejects a row before it can be loaded — a data-quality gate, not one of the three letters, but standard ETL practice |
+| **L**oad | `pipeline.py` (`session.add`/`merge` + `commit`) | Persists into Postgres |
+
+**A naming collision worth knowing about, not glossing over:** koshi's own
+code calls the *Transform* step "**extraction**" (the `extraction/`
+folder, "extraction tier," "extraction watermark" — matching the design
+spec's own vocabulary throughout). That's a different use of the word from
+ETL's *Extract*, which in koshi's code is the plain HTTP fetch
+(`crawler/fetch.py`). Same word, two different pipeline stages, in two
+different vocabularies — the table above is the one place to check which
+is meant.
 
 ```mermaid
 graph TB
-    subgraph ingestion ["Ingestion — python -m koshi"]
+    subgraph ingestion ["ETL pipeline — python -m koshi"]
         main_entry["__main__.py"]
         pipeline["pipeline.py<br/>sync_anzsco_occupations<br/>sync_skillselect_rounds"]
         fetch["crawler/fetch.py<br/>fetch_and_register"]
@@ -57,7 +78,7 @@ graph TB
         prov["provenance.py<br/>require_provenance"]
     end
 
-    subgraph serving ["Serving — uvicorn"]
+    subgraph serving ["Serving API — uvicorn"]
         api["api/occupations.py<br/>FastAPI router"]
         insights["insights.py<br/>deterministic templates"]
         schemas["schemas/occupation.py<br/>Pydantic response models"]
