@@ -43,7 +43,14 @@ CEILING_USAGE_SEED_PATH = Path(__file__).parent / "seeds" / "ceiling_usage_manua
 
 def main() -> int:
     setup_logging()
-    logger = logging.getLogger(__name__)
+    # Deliberately NOT logging.getLogger(__name__): __name__ resolves to
+    # "koshi.__main__" when this module is imported normally (as in
+    # tests), but to the bare string "__main__" when actually executed
+    # via `python -m koshi` (runpy sets __name__ == "__main__" for the
+    # script being run). An explicit string keeps the logger name — and
+    # therefore per-logger filtering/level configuration — stable
+    # regardless of how the module is invoked.
+    logger = logging.getLogger("koshi.__main__")
     try:
         session = SessionLocal()
         # sessionmaker()'s call above only constructs a Session object — it
