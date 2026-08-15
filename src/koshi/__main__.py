@@ -17,9 +17,9 @@ summary, but does NOT prevent the remaining steps from running — e.g.
 seed_ceiling_usage has zero dependency on either scraping step succeeding
 and must still run even if both of them fail.
 
-Exit codes: 0 clean, 1 fatal init failure (not reachable by any step
-above — reserved for e.g. an unreachable database before the loop starts),
-2 partial failure (some steps ok, some failed — the expected common state
+Exit codes: 0 clean, 1 fatal init failure (session construction or the
+liveness check below fails — e.g. an unreachable database — before any
+step runs), 2 partial failure (some steps ok, some failed — the expected common state
 once there are many sources, not a rare edge case), 3 total failure (every
 step failed). A cron wrapper (and later, Cloud Scheduler + Cloud
 Monitoring) can act on 2/3 without koshi needing any notification
@@ -29,6 +29,8 @@ import logging
 import sys
 import datetime as dt
 from pathlib import Path
+
+from sqlalchemy import text
 
 from koshi.db import SessionLocal
 from koshi.logging_config import setup_logging
@@ -44,6 +46,13 @@ def main() -> int:
     logger = logging.getLogger(__name__)
     try:
         session = SessionLocal()
+        # sessionmaker()'s call above only constructs a Session object — it
+        # does NOT open a connection (SQLAlchemy connects lazily on first
+        # use). Without this liveness check, an unreachable database would
+        # sail past this except block and only surface inside step 1's own
+        # try/except below, yielding exit code 3 (partial/total failure)
+        # instead of the fatal-init code 1 this block exists to report.
+        session.execute(text("SELECT 1"))
     except Exception:
         logger.exception("fatal: could not initialize a database session")
         return 1

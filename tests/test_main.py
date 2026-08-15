@@ -6,6 +6,12 @@ class _FakeSession:
     functions are monkeypatched below and never touch it, so a real DB
     connection isn't needed to test main()'s control flow."""
 
+    def execute(self, *args, **kwargs):
+        # Stands in for the post-construction liveness check
+        # (session.execute(text("SELECT 1"))) — a no-op success here, so
+        # these tests exercise control flow past init exactly as before.
+        return None
+
     def rollback(self):
         pass
 
@@ -69,6 +75,34 @@ def test_main_returns_1_when_session_initialization_fails(monkeypatch):
         raise RuntimeError("cannot connect")
 
     monkeypatch.setattr(main_module, "SessionLocal", failing_session_local)
+
+    exit_code = main_module.main()
+
+    assert exit_code == 1
+
+
+def test_main_returns_1_when_database_is_unreachable(monkeypatch):
+    """Proves the liveness check is what actually catches an unreachable
+    database — SessionLocal() itself succeeds (matching real SQLAlchemy
+    behaviour: sessionmaker() only constructs a Session, it doesn't open a
+    connection), and the failure only surfaces on the first real query.
+    Without the liveness check in main(), this scenario would instead slip
+    past the init except block and fail inside step 1, yielding exit code
+    3 rather than 1 — this is the real-world case
+    test_main_returns_1_when_session_initialization_fails doesn't cover.
+    """
+
+    class _UnreachableDbSession:
+        def execute(self, *args, **kwargs):
+            raise RuntimeError("could not connect to server: Connection refused")
+
+        def rollback(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(main_module, "SessionLocal", lambda: _UnreachableDbSession())
 
     exit_code = main_module.main()
 
