@@ -72,24 +72,45 @@ def main() -> int:
         for name, step in steps:
             try:
                 result = step()
-                summary["steps"].append({"name": name, "status": "ok", "count": len(result)})
+                step_summary = {"name": name, "status": "ok", "count": len(result)}
+                # sync_anzsco_occupations/sync_skillselect_rounds surface
+                # their extraction parser's skip count via a bonus
+                # `.skipped` attribute on the returned list (see
+                # pipeline._RowsWithSkipCount) rather than a return-type
+                # change — a run that silently drops most rows to
+                # soft-fails should still be visible here even though it
+                # reports "status": "ok".
+                skipped = getattr(result, "skipped", None)
+                if skipped is not None:
+                    step_summary["skipped"] = skipped
+                summary["steps"].append(step_summary)
                 logger.info("%s: %d new/updated", name, len(result))
-            except Exception:
+            except Exception as exc:
                 session.rollback()
                 logger.exception("%s failed — continuing with remaining steps", name)
-                summary["steps"].append({"name": name, "status": "failed"})
+                summary["steps"].append({
+                    "name": name,
+                    "status": "failed",
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
     finally:
         session.close()
-
-    write_run_summary(summary)
 
     ok = sum(1 for s in summary["steps"] if s["status"] == "ok")
     failed = sum(1 for s in summary["steps"] if s["status"] == "failed")
     if failed and ok == 0:
-        return 3
-    if failed:
-        return 2
-    return 0
+        exit_code = 3
+    elif failed:
+        exit_code = 2
+    else:
+        exit_code = 0
+
+    summary["finished_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
+    summary["exit_code"] = exit_code
+
+    write_run_summary(summary)
+
+    return exit_code
 
 
 if __name__ == "__main__":

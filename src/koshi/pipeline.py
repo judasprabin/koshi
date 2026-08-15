@@ -15,6 +15,24 @@ from koshi.momentum import refresh_momentum
 
 logger = logging.getLogger(__name__)
 
+
+class _RowsWithSkipCount(list):
+    """A plain list subclass that additionally carries the extraction
+    parser's skip count (ParseResult.skipped).
+
+    sync_anzsco_occupations/sync_skillselect_rounds's return type
+    (list[Occupation]/list[EoiRound]) is relied on elsewhere (e.g.
+    tests/test_pipeline.py) and must not change. Since it's still a real
+    list, every existing caller (len(), iteration, `== []`, ...) keeps
+    working unmodified; __main__.py's run summary can additionally read
+    the bonus `.skipped` attribute via getattr(result, "skipped", None)
+    to surface how many rows a run silently dropped, without either side
+    needing a wider return-type change.
+    """
+
+    skipped: int = 0
+
+
 ANZSCO_URL = "https://www.jobsandskills.gov.au/data/occupation-and-industry-profiles/occupations-anzsco"
 SKILLSELECT_ROUNDS_URL = "https://immi.homeaffairs.gov.au/visas/working-in-australia/skillselect/invitation-rounds"
 
@@ -61,7 +79,9 @@ def sync_anzsco_occupations(
     # line (and the commit) never runs, so the next sync retries.
     page.last_extracted_at = dt.datetime.now(dt.timezone.utc)
     session.commit()
-    return result.rows
+    rows = _RowsWithSkipCount(result.rows)
+    rows.skipped = result.skipped
+    return rows
 
 
 def sync_skillselect_rounds(
@@ -148,4 +168,6 @@ def sync_skillselect_rounds(
             session.rollback()
             logger.exception("momentum refresh failed for occupation_code=%s", code)
 
-    return new_rounds
+    rows = _RowsWithSkipCount(new_rounds)
+    rows.skipped = parse_result.skipped
+    return rows

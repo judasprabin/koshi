@@ -122,9 +122,79 @@ def test_main_writes_a_run_summary_reflecting_each_steps_outcome(monkeypatch):
     monkeypatch.setattr(main_module, "seed_ceiling_usage", lambda session, path: [])
     monkeypatch.setattr(main_module, "write_run_summary", fake_write_run_summary)
 
-    main_module.main()
+    exit_code = main_module.main()
 
     assert "summary" in written
-    assert written["summary"]["steps"][0] == {"name": "anzsco_occupations", "status": "ok", "count": 1}
-    assert written["summary"]["steps"][1] == {"name": "skillselect_rounds", "status": "ok", "count": 0}
-    assert written["summary"]["steps"][2] == {"name": "ceiling_usage_seed", "status": "ok", "count": 0}
+    summary = written["summary"]
+    assert summary["steps"][0] == {"name": "anzsco_occupations", "status": "ok", "count": 1}
+    assert summary["steps"][1] == {"name": "skillselect_rounds", "status": "ok", "count": 0}
+    assert summary["steps"][2] == {"name": "ceiling_usage_seed", "status": "ok", "count": 0}
+    # finished_at/exit_code must land in the written summary, not just be
+    # returned from main() — a summary file read after the fact is the
+    # only observability a cron-triggered run has.
+    assert "finished_at" in summary
+    assert summary["finished_at"] >= summary["started_at"]
+    assert summary["exit_code"] == 0 == exit_code
+
+
+def test_main_writes_an_error_detail_for_a_failed_step(monkeypatch):
+    written = {}
+
+    def fake_write_run_summary(summary):
+        written["summary"] = summary
+        return "fake-path"
+
+    def failing_sync(session):
+        raise RuntimeError("boom: upstream table not found")
+
+    monkeypatch.setattr(main_module, "SessionLocal", lambda: _FakeSession())
+    monkeypatch.setattr(main_module, "sync_anzsco_occupations", failing_sync)
+    monkeypatch.setattr(main_module, "sync_skillselect_rounds", lambda session: [])
+    monkeypatch.setattr(main_module, "seed_ceiling_usage", lambda session, path: [])
+    monkeypatch.setattr(main_module, "write_run_summary", fake_write_run_summary)
+
+    exit_code = main_module.main()
+
+    failed_step = written["summary"]["steps"][0]
+    assert failed_step["name"] == "anzsco_occupations"
+    assert failed_step["status"] == "failed"
+    assert failed_step["error"] == "RuntimeError: boom: upstream table not found"
+    assert written["summary"]["exit_code"] == 2 == exit_code
+
+
+class _RowsWithSkipped(list):
+    """Minimal stand-in for pipeline._RowsWithSkipCount — a plain list
+    with a bonus `.skipped` attribute, exactly the shape
+    sync_anzsco_occupations/sync_skillselect_rounds return in production
+    so this test doesn't need a real DB/parser round-trip to prove
+    __main__.py reads the attribute correctly."""
+
+    skipped: int = 0
+
+
+def test_main_threads_parser_skip_count_into_the_step_summary(monkeypatch):
+    written = {}
+
+    def fake_write_run_summary(summary):
+        written["summary"] = summary
+        return "fake-path"
+
+    anzsco_result = _RowsWithSkipped([1, 2])
+    anzsco_result.skipped = 4
+    skillselect_result = _RowsWithSkipped([1])
+    skillselect_result.skipped = 0
+
+    monkeypatch.setattr(main_module, "SessionLocal", lambda: _FakeSession())
+    monkeypatch.setattr(main_module, "sync_anzsco_occupations", lambda session: anzsco_result)
+    monkeypatch.setattr(main_module, "sync_skillselect_rounds", lambda session: skillselect_result)
+    # ceiling_usage_seed returns a plain list in production (no parser skip
+    # count to surface) — must not gain a "skipped" key from unrelated code.
+    monkeypatch.setattr(main_module, "seed_ceiling_usage", lambda session, path: [1])
+    monkeypatch.setattr(main_module, "write_run_summary", fake_write_run_summary)
+
+    main_module.main()
+
+    steps = written["summary"]["steps"]
+    assert steps[0]["skipped"] == 4
+    assert steps[1]["skipped"] == 0
+    assert "skipped" not in steps[2]
