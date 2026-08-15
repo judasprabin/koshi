@@ -2,10 +2,13 @@ import datetime as dt
 
 import httpx
 import pytest
+from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
+import koshi.pipeline as pipeline_module
 from koshi.db import Base
 from koshi.models.eoi_rounds import EoiRound
+from koshi.models.occupation_momentum import OccupationMomentum
 from koshi.models.occupations import Occupation
 from koshi.models.source_pages import SourcePage
 from koshi.pipeline import SKILLSELECT_ROUNDS_URL, sync_anzsco_occupations, sync_skillselect_rounds
@@ -191,3 +194,76 @@ def test_sync_skillselect_rounds_dedups_in_batch_duplicate_rows(db_session_no_au
         .all()
     )
     assert len(rows) == 1  # exactly one row persisted — not zero, not two
+
+
+def test_momentum_refresh_failure_for_one_code_does_not_block_the_other(db_session, monkeypatch):
+    db_session.add_all([
+        Occupation(
+            code="261313", name="Software Engineer", unit_group="2613",
+            source_url="https://example.gov.au", retrieved_at=dt.datetime.now(dt.timezone.utc),
+            reliability_tier="official_scraped",
+        ),
+        Occupation(
+            code="254499", name="Registered Nurse (Aged Care)", unit_group="2544",
+            source_url="https://example.gov.au", retrieved_at=dt.datetime.now(dt.timezone.utc),
+            reliability_tier="official_scraped",
+        ),
+    ])
+    db_session.commit()
+
+    # Two prior rounds each — the round this test triggers is each
+    # occupation's 3rd, completing compute_momentum's trailing-3 window.
+    base_date = dt.date(2026, 5, 1)
+    for code in ("261313", "254499"):
+        for i, points in enumerate([70, 75]):
+            db_session.add(
+                EoiRound(
+                    visa_code="189", occupation_code=code,
+                    round_date=base_date + dt.timedelta(days=30 * i),
+                    threshold_points=points, invitations_issued=100,
+                    source_url="https://immi.homeaffairs.gov.au/visas/working-in-australia/skillselect/invitation-rounds",
+                    retrieved_at=dt.datetime.now(dt.timezone.utc),
+                    reliability_tier="official_scraped",
+                )
+            )
+    db_session.commit()
+
+    fixture = b"""
+    <p>Round date: 24 July 2026</p>
+    <table id="round-results">
+      <thead><tr><th>Occupation</th><th>Points Threshold</th><th>Invitations Issued</th></tr></thead>
+      <tbody>
+        <tr><td>261313</td><td>85</td><td>120</td></tr>
+        <tr><td>254499</td><td>80</td><td>90</td></tr>
+      </tbody>
+    </table>
+    """
+
+    original_refresh_momentum = pipeline_module.refresh_momentum
+
+    def flaky_refresh(session, code):
+        if code == "261313":
+            raise RuntimeError("simulated momentum failure")
+        return original_refresh_momentum(session, code)
+
+    monkeypatch.setattr(pipeline_module, "refresh_momentum", flaky_refresh)
+
+    def handler(request):
+        return httpx.Response(200, content=fixture)
+
+    result = pipeline_module.sync_skillselect_rounds(
+        db_session, client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+
+    assert len(result) == 2  # both rounds still persisted despite the momentum failure
+
+    working_momentum = db_session.scalar(
+        select(OccupationMomentum).where(OccupationMomentum.occupation_code == "254499")
+    )
+    assert working_momentum is not None
+    assert working_momentum.direction == "rising"
+
+    failed_momentum = db_session.scalar(
+        select(OccupationMomentum).where(OccupationMomentum.occupation_code == "261313")
+    )
+    assert failed_momentum is None

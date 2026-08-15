@@ -127,8 +127,15 @@ def sync_skillselect_rounds(
     # round — nothing else in the system ever calls refresh_momentum, so
     # without this, occupation_momentum rows are never produced end-to-end
     # and GET /v1/occupations always shows momentum: null.
+    #
+    # Isolated per code: one occupation's momentum computation failing must
+    # not prevent the others from being refreshed, and must not undo the
+    # round persistence that already committed above.
     new_codes = {r.occupation_code for r in new_rounds if r.occupation_code is not None}
     for code in new_codes:
-        refresh_momentum(session, code)
+        try:
+            refresh_momentum(session, code)
+        except Exception:
+            logger.exception("momentum refresh failed for occupation_code=%s", code)
 
     return new_rounds
