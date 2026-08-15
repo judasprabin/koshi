@@ -13,6 +13,13 @@ this doc describes the subset that's real today.
 
 ## 1. Where koshi sits
 
+> **📐 Full ETL pipeline architecture** (industry survey, all 16 sources, 4-tier
+> extraction, complete data model, fault tolerance, scheduling, serving, infra,
+> roadmap) lives in
+> [`docs/ETL-PIPELINE-ARCHITECTURE.md`](ETL-PIPELINE-ARCHITECTURE.md). This file
+> documents the subset that's *actually built* today; that file is the target
+> architecture.
+
 koshi is one of five repos in the Saathi product family. It's the only one
 with no end-user identity anywhere in it — the data it serves is public and
 identical for every caller.
