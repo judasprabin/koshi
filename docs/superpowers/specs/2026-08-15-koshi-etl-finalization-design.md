@@ -1,5 +1,9 @@
 # koshi — ETL Pipeline: Complete Design
 
+> **Superseded by** [`2026-08-16-koshi-etl-architecture.md`](2026-08-16-koshi-etl-architecture.md),
+> the canonical merged doc. This file is kept as the reconciliation record;
+> its decisions are carried forward there unchanged.
+
 **Status:** Design complete — awaiting review before any implementation plan is written.
 **Date:** 2026-08-15
 **Author:** Prabin Karki, via Claude (native Plan Mode: Explore → Plan → Review; reconciled

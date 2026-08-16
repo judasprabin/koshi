@@ -1,12 +1,12 @@
 # koshi — ETL Pipeline Architecture
 
 > **⚠️ Superseded.** This doc was produced independently, concurrently with
-> [`docs/superpowers/specs/2026-08-15-koshi-etl-finalization-design.md`](superpowers/specs/2026-08-15-koshi-etl-finalization-design.md),
-> which reconciles the two (see that doc's §0 for exactly what disagreed and
-> why) and is now the source of truth for koshi's ETL design. Kept here,
-> unmodified, because §2 (industry survey) and §12 (tooling comparisons) are
-> genuinely useful research the merged doc condenses rather than repeats in
-> full. Everything else in this file — tier assignments, sequencing, the
+> the ETL design it overlaps. It has since been **merged** into the canonical
+> [`docs/superpowers/specs/2026-08-16-koshi-etl-architecture.md`](superpowers/specs/2026-08-16-koshi-etl-architecture.md),
+> which folds this doc's industry survey (§2), ERD, scheduling groups,
+> serving-layer target, and tooling comparisons into the code-grounded design
+> and is now the single source of truth. Kept here, unmodified, as reference.
+> Everything in this file — tier assignments, sequencing, the
 > deployment/scheduling sections — reflects a design that was **not** what
 > got confirmed; don't build against it.
 

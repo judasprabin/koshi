@@ -14,12 +14,13 @@ this doc describes the subset that's real today.
 ## 1. Where koshi sits
 
 > **📐 Full ETL pipeline design** (all 16 sources, the complete data model,
-> fault tolerance, sequencing, target scheduling/deployment) lives in
-> [`docs/superpowers/specs/2026-08-15-koshi-etl-finalization-design.md`](superpowers/specs/2026-08-15-koshi-etl-finalization-design.md).
+> fault tolerance, sequencing, target scheduling/deployment, and the full
+> technology-alternatives record) lives in the canonical
+> [`docs/superpowers/specs/2026-08-16-koshi-etl-architecture.md`](superpowers/specs/2026-08-16-koshi-etl-architecture.md).
 > This file documents the subset that's *actually built* today; that doc is
-> the target architecture, reviewed and confirmed — not
-> `docs/ETL-PIPELINE-ARCHITECTURE.md`, an earlier independent draft that
-> doc's own §0 explains and supersedes.
+> the target architecture. The earlier
+> `docs/ETL-PIPELINE-ARCHITECTURE.md` is an independent draft that doc's own
+> banner explains and supersedes.
 
 koshi is one of five repos in the Saathi product family. It's the only one
 with no end-user identity anywhere in it — the data it serves is public and
