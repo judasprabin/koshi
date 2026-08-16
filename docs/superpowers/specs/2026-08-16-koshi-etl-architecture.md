@@ -1,102 +1,102 @@
 # koshi — ETL Pipeline Architecture (Canonical)
 
-**Status:** Canonical — this is the single source of truth for koshi's ETL
-design. It merges two prior, independently-produced documents and is the one
-to build against.
-**Date:** 2026-08-16
-**Author:** Prabin Karki (merged from prior drafts; see §0)
+**Status:** Canonical — single source of truth for koshi's architecture. This
+revision incorporates the re-architecture feedback from `feedback.md` while
+preserving all code-grounded decisions from the prior reconciliation.
+**Date:** 2026-08-16 (rebuilt)
+**Author:** Prabin Karki (merged from prior drafts + feedback.md re-architecture)
 
-> This doc **supersedes** both
-> [`docs/ETL-PIPELINE-ARCHITECTURE.md`](../../ETL-PIPELINE-ARCHITECTURE.md)
-> (the broader industry-survey draft) and
-> [`docs/superpowers/specs/2026-08-15-koshi-etl-finalization-design.md`](2026-08-15-koshi-etl-finalization-design.md)
-> (the code-grounded reconciliation). Both remain on disk as reference. Where
-> the two disagreed, the **2026-08-15 spec wins** — its decisions were made
-> against a live codebase audit, not a desk survey.
+> This doc **supersedes** the prior
+> `2026-08-16-koshi-etl-architecture.md` (itself a merge of two earlier
+> drafts). The code-grounded decisions from
+> [`2026-08-15-koshi-etl-finalization-design.md`](2026-08-15-koshi-etl-finalization-design.md)
+> and the runtime-state audit from
+> [`../../ARCHITECTURE.md`](../../ARCHITECTURE.md) are preserved unchanged.
+> The delta introduced by `feedback.md` — medallion pipeline, control-plane/data-plane
+> separation, acquisition/extraction split, quality engine, provider strategy,
+> versioned releases — is called out explicitly in §15.
 
 ---
 
 ## Table of Contents
 
-1. [§0 Provenance — what this doc merges](#0-provenance--what-this-doc-merges)
-2. [§1 Executive summary](#1-executive-summary)
-3. [§2 Where koshi sits, and why the pipeline looks the way it does](#2-where-koshi-sits-and-why-the-pipeline-looks-the-way-it-does)
-4. [§3 Industry survey — the three generations of ETL and koshi's place](#3-industry-survey--the-three-generations-of-etl-and-koshis-place)
-5. [§4 The complete source catalog (16 sources, 5 tiers)](#4-the-complete-source-catalog-16-sources-5-tiers)
-6. [§5 Extraction tier strategy](#5-extraction-tier-strategy)
-7. [§6 The complete data model (18 tables)](#6-the-complete-data-model-18-tables)
-8. [§7 Pipeline architecture — the eight-stage flow](#7-pipeline-architecture--the-eight-stage-flow)
-9. [§8 Fault tolerance & resilience](#8-fault-tolerance--resilience)
-10. [§9 Scheduling & target deployment](#9-scheduling--target-deployment)
-11. [§10 Serving layer (target — out of scope this pass)](#10-serving-layer-target--out-of-scope-this-pass)
-12. [§11 Implementation roadmap](#11-implementation-roadmap)
-13. [§12 Technology alternatives — every stack considered, why each was kept or dropped](#12-technology-alternatives--every-stack-considered-why-each-was-kept-or-dropped)
-14. [§13 Open design questions](#13-open-design-questions)
-15. [§14 Success criteria](#14-success-criteria)
+1. [§1 Executive Summary](#1-executive-summary)
+2. [§2 Architecture Overview — The Medallion Pipeline](#2-architecture-overview--the-medallion-pipeline)
+3. [§3 The Source → Resource → Snapshot Model](#3-the-source--resource--snapshot-model)
+4. [§4 Control Plane](#4-control-plane)
+5. [§5 Data Plane](#5-data-plane)
+   - [§5.1 Acquisition Layer — Immutable Raw Snapshots](#51-acquisition-layer--immutable-raw-snapshots)
+   - [§5.2 Extraction Layer — Quality-Aware Provider Fallback](#52-extraction-layer--quality-aware-provider-fallback)
+   - [§5.3 Canonical Contracts (Silver)](#53-canonical-contracts-silver)
+   - [§5.4 Quality Engine](#54-quality-engine)
+   - [§5.5 Normalization & Gold Layer](#55-normalization--gold-layer)
+   - [§5.6 Generic Execution Model (pipeline_runs)](#56-generic-execution-model-pipeline_runs)
+   - [§5.7 Versioned Releases & Rollback](#57-versioned-releases--rollback)
+6. [§6 Source Catalog (Summary)](#6-source-catalog-summary)
+7. [§7 Domain Model (Summary)](#7-domain-model-summary)
+8. [§8 Pipeline Architecture — The Full Flow](#8-pipeline-architecture--the-full-flow)
+9. [§9 Provider Strategy & Phase-0 Bake-Off](#9-provider-strategy--phase-0-bake-off)
+10. [§10 Regulatory Posture, Provenance & Watermarks](#10-regulatory-posture-provenance--watermarks)
+11. [§11 Fault Tolerance & Resilience](#11-fault-tolerance--resilience)
+12. [§12 Scheduling & Target Deployment](#12-scheduling--target-deployment)
+13. [§13 Technology Alternatives — Every Stack Considered](#13-technology-alternatives--every-stack-considered)
+14. [§14 Implementation Roadmap (Updated)](#14-implementation-roadmap-updated)
+15. [§15 What Changed vs. the Prior Doc](#15-what-changed-vs-the-prior-doc)
+16. [§16 Open Design Questions](#16-open-design-questions)
+17. [§17 Success Criteria](#17-success-criteria)
 
 ---
 
-## 0. Provenance — what this doc merges
+## 1. Executive Summary
 
-Two comprehensive ETL designs were produced around the same time:
+koshi is a **domain-agnostic ingestion and data-quality engine with
+domain-specific contracts and normalization** for the Australian
+skilled-migration system. It acquires structured data from web sources
+(APIs, HTML, PDFs, files), validates it against canonical contracts, and
+serves it as versioned, provenance-bearing facts via a read-only REST API.
 
-- **`docs/ETL-PIPELINE-ARCHITECTURE.md`** — a desk-level survey: industry
-  framing, a 19-domain source inventory, an ASCII ERD, a four-tier extraction
-  scheme, a full serving-layer section, deployment costing, and an appendix of
-  tooling comparisons. Broad and well-researched, but produced *without* a
-  live codebase audit, so some of its tier assignments and its sequencing
-  assumed building PDF/LLM extraction now.
-- **`docs/superpowers/specs/2026-08-15-koshi-etl-finalization-design.md`** —
-  a code-grounded design produced against the actual `src/koshi/` source. It
-  audited the fault-tolerance gap (`grep`-verified: zero `except`, zero
-  `logger`), confirmed every remaining source resolves to deterministic HTML
-  or manual curation, and fixed the data-model gaps.
+The architecture adopts a **medallion (Bronze → Silver → Gold) pipeline**:
 
-**This doc keeps the 2026-08-15 spec's decisions as ground truth** (they are
-the ones reconciled against the code) and folds the 2026-08-14/15 draft's
-genuinely additive material back in: the industry survey (§3), the ERD — now
-rendered as mermaid instead of ASCII (§6), the cadence-group scheduling model
-(§9), the serving-layer target (§10), the deployment costing (§9), and the
-expanded tooling comparisons (§12).
-
-Where the two drafts disagreed, the resolutions stand:
-
-| Disagreement | Resolution (final) | Why |
+| Layer | Purpose | Immutability |
 |---|---|---|
-| Build PDF (tier 3) / Claude (tier 4) extraction now? | **No.** All 12 remaining sources resolve to deterministic HTML or manual curation. | Confirmed against the live codebase — see §5. |
-| Include "how to present this data" logic? | **Documented as a target only, not built.** | Requested as a separate, later round. |
-| Tier numbering (5-tier vs 4-tier) | **5-tier** (1 crawl, 2 HTML, 3 PDF, 4 LLM, 5 manual). | Matches the existing code and `docs/data-sources.md`. |
-| Health/character/English → fold into `english_test_bands`? | **No.** Separate `eligibility_requirements` table. | Prose reference ≠ test-score band table. |
-| Design production deployment now? | **Documented target only, not scheduled work.** | Local-first rule (design spec §11) still holds. |
+| **Bronze** | Raw, immutable snapshots of every source acquisition | ✅ Append-only, content-hashed |
+| **Silver** | Cleaned, validated canonical records validated against Pydantic contracts | ✅ Filtered through quality gates |
+| **Gold** | Normalized, query-optimized facts ready for the serving API | ✅ Published as versioned releases |
 
----
+The engine separates **control** ("what should happen" — sources, contracts,
+schedules, quality policies, provider policies) from **data** ("what needs to
+happen" — acquisition, extraction, validation, publication), modeled as a
+**source → resource → snapshot** hierarchy.
 
-## 1. Executive summary
+### Key Design Decisions
 
-koshi is a **headless ETL pipeline feeding a read-only REST API**. It extracts
-structured, sourced facts about the Australian skilled-migration system from
-government pages and serves them with **no end-user identity anywhere** — the
-data is public and identical for every caller.
-
-| Property | Value |
+| Decision | Rationale |
 |---|---|
-| **Type** | Headless ETL + read-only API microservice |
-| **Domain** | AU skilled-migration public data |
-| **Auth** | None (public data); production = Cloud Run IAM invoker only |
-| **Consumer** | `lukla` (Next.js frontend) — the only caller |
-| **Stack** | Python 3.11, httpx, BeautifulSoup4/lxml, SQLAlchemy 2.0, Alembic, FastAPI, Postgres, tenacity |
-| **Infra (target)** | Cloud Run Job (ETL) + Cloud Run Service (API) + Cloud SQL Postgres + GCS DLQ |
+| **Separate acquisition from extraction** | Raw snapshots capture the original source artifact before any processing for true replayability |
+| **Deterministic-first extraction** | Use cheapest mechanism (httpx + BS4) for simple HTML; managed providers (Firecrawl/Apify/Zyte) only when deterministic extraction fails quality gates |
+| **Quality-aware provider fallback** | Don't accept extraction just because `success=True`; validate against quality gates before trying next provider |
+| **Control plane + data plane** | Separate "what should happen" (configuration) from "what needs to happen" (execution) |
+| **Source → Resource → Snapshot model** | One source may have multiple resources (URL, PDF, API); each resource has independent snapshots |
+| **Generic execution model** | Unified `pipeline_run` with child tasks (acquisition, extraction, validation, quality, publication) for full lineage |
+| **Severity-based quality** | INFO, WARNING, ERROR, BLOCKER levels with configurable publication policies and a quarantine path |
+| **Dataset-specific quality rules** | Each contract defines its own expected record counts, required fields, uniqueness constraints, and semantic-drift thresholds |
+| **Semantic drift detection** | LLM compares source text across snapshots to detect meaning changes, not just schema changes |
+| **Versioned releases with rollback** | Every publication is a named `dataset_release`; rollback reverts `is_current` to any prior known-good release |
+| **Domain-agnostic, reusable engine** | The ingestion/quality pipeline is designed to power NepalEarth (trekking routes, conservation data) with new contracts only |
+
+### What's Real Today vs. Target
 
 | Layer | Today | Target (this doc) |
 |---|---|---|
 | Sources extracted | 2 (ANZSCO, SkillSelect rounds) | 16 cataloged sources |
-| Tables populated | 5 | 18 (13 new — see §6) |
-| Extraction tiers in use | 1 (deterministic HTML) | 2 (+ manual curation); tiers 3/4 pre-researched, not built |
+| Tables populated | 5 | 18 (13 new) |
+| Extraction tiers in use | 1 (deterministic HTML) | 2 (+ manual curation); tiers 3/4 pre-researched |
 | Fault tolerance | None (grep-verified) | Retry/backoff, per-item isolation, structured logging, run summaries |
 | Scheduling | Manual (`python -m koshi`) | Still manual this pass; cadence groups documented for later |
-| Deployment | Local only | Still local this pass; GCP target documented for later |
+| Deployment | Local only | Local-first; GCP target documented for later |
+| Medallion pipeline | Not yet built | Bronze snapshots → Silver contracts → Gold releases |
 
-### Architecture principles (every decision below must hold these)
+### Architecture Principles
 
 1. **Every row carries provenance** — `source_url`, `retrieved_at`,
    `reliability_tier` on every fact table. `derived` rows cite the koshi rows
@@ -105,9 +105,9 @@ data is public and identical for every caller.
    automation, say so; never ship a fabricated number.
 3. **Deterministic where possible** — no LLM extraction is scheduled at all in
    this pass; everything parses cleanly or gets curated by hand.
-4. **The fetcher doesn't know about the parser** — content hash and
-   `last_changed_at` commit *before* parsing is attempted, so a failed parse
-   retries automatically next run.
+4. **The acquirer doesn't know about the extractor** — raw snapshots commit
+   before extraction is attempted, so a failed extract retries from the
+   immutable snapshot, not a re-fetch.
 5. **Derived ≠ scraped** — computed facts (momentum) cite the rows they were
    computed from, never an external URL.
 6. **One bounded context** — koshi calls nothing else in the Saathi family,
@@ -115,12 +115,14 @@ data is public and identical for every caller.
 
 ---
 
-## 2. Where koshi sits, and why the pipeline looks the way it does
+## 2. Architecture Overview — The Medallion Pipeline
+
+### 2.1 Context Diagram
 
 ```mermaid
 graph LR
     lukla["lukla<br/>(Next.js frontend)"] -->|"GET /v1/*<br/>no auth token"| koshi["koshi<br/>(this repo: ETL + API)"]
-    koshi -.->|"crawls & extracts from"| gov["Home Affairs · ANZSCO ·<br/>SkillSelect · state gov pages"]
+    koshi -.->|"acquires from"| gov["Home Affairs · ANZSCO ·<br/>SkillSelect · state gov pages"]
     lukla -->|"forwarded end-user JWT"| thamel["thamel<br/>(F1–F4a backend)"]
     thamel -->|"two-token: service ID + user JWT"| manaslu["manaslu<br/>(scan/fill agent)"]
 
@@ -129,131 +131,630 @@ graph LR
     style manaslu fill:#888,color:#fff
 ```
 
-koshi is one of five repos in the Saathi family, and the only one with no
-end-user identity. It **never** calls thamel or manaslu, and they never call
-it. Its data model is *public-reference*, not *personal* — which is why the
-entire pipeline is built around provenance ("where did this fact come from")
-rather than authorization ("whose fact is this").
+koshi is one of five repos in the Saathi product family, and the only one
+with no end-user identity anywhere.
 
-koshi runs as **two processes over one codebase**:
+### 2.2 Medallion Architecture — End-to-End Flow
 
-- **ETL pipeline** — `python -m koshi`. Extract (fetch raw HTML) → Transform
-  (parse into typed rows + derive momentum) → Load (persist to Postgres), with
-  a provenance validation gate between transform and load.
-- **Serving API** — `uvicorn koshi.main:app`. Read-only; never fetches or
-  parses anything itself.
+```mermaid
+flowchart TB
+    subgraph CONTROL["CONTROL PLANE"]
+        SR["Source Registry"]
+        CT["Contracts (Pydantic)"]
+        SC["Schedules"]
+        QP["Quality Policies"]
+        PP["Provider Policies"]
+        RM["Release Management"]
+    end
 
-> **Naming collision worth knowing:** koshi's own code calls the *Transform*
-> step "**extraction**" (the `extraction/` folder, "extraction tier",
-> "extraction watermark"). That's a different word from ETL's *Extract*, which
-> is the plain HTTP fetch in `crawler/fetch.py`. Same word, two stages, two
-> vocabularies.
+    subgraph ACQUISITION["ACQUISITION — Bronze (Immutable)"]
+        SRC["Source<br/>API / HTML / PDF / File"]
+        ACQ["Acquisition<br/>HTTP · Browser · API client · Managed fetch"]
+        RAW["Bronze Snapshot<br/>request.json · response.html · headers.json<br/>screenshot.png · manifest.json<br/>(Content-hashed, GCS koshi-raw/)"]
+    end
 
----
+    subgraph EXTRACTION["EXTRACTION → Silver"]
+        EXT["Extraction<br/>HTML parser · PDF parser<br/>Firecrawl · Apify · Zyte · LLM"]
+        CONTRACT["Canonical Contract<br/>Pydantic + version"]
+    end
 
-## 3. Industry survey — the three generations of ETL and koshi's place
+    subgraph QUALITY["QUALITY ENGINE"]
+        QE["Quality Checks<br/>Schema · Completeness · Business rules<br/>Anomaly · Semantic drift"]
+        GATE{"Publication Gate"}
+    end
 
-### 3.1 The three generations
+    subgraph STORAGE["GOLD — Published"]
+        QUARANTINE["Quarantine"]
+        NORM["Normalization"]
+        GOLD["Gold Facts"]
+        RELEASE["Versioned Release<br/>dataset_releases"]
+        API["FastAPI → lukla"]
+    end
 
-| Generation | Era | Paradigm | Examples | Best for |
+    CONTROL --> ACQUISITION
+    SRC --> ACQ
+    ACQ --> RAW
+    RAW --> EXT
+    EXT --> CONTRACT
+    CONTRACT --> QE
+    QE --> GATE
+    GATE -->|"PASS / WARNING"| NORM
+    GATE -->|"BLOCKER"| QUARANTINE
+    NORM --> GOLD
+    GOLD --> RELEASE
+    RELEASE --> API
+
+    style CONTROL fill:#0b0b0d,color:#fff,stroke:#f5a623
+    style ACQUISITION fill:#cd7f32,color:#fff,stroke:#cd7f32
+    style EXTRACTION fill:#c0c0c0,color:#000,stroke:#c0c0c0
+    style QUALITY fill:#888,color:#fff,stroke:#888
+    style STORAGE fill:#ffd700,color:#000,stroke:#ffd700
+    style QUARANTINE fill:#e74c3c,color:#fff
+```
+
+### 2.3 Medallion Layer Definitions
+
+| Layer | Medallion | Purpose | Immutability | Storage |
 |---|---|---|---|---|
-| **Gen 1 — Batch ETL** | 1990s–2010s | Scheduled bulk extraction, staging tables, SQL transforms | Informatica, Talend, SSIS | Enterprise data warehousing |
-| **Gen 2 — Stream processing** | 2010s– | Event-driven, real-time, append-only logs | Kafka, Flink, Spark Streaming | High-throughput event data |
-| **Gen 3 — ELT** | 2015s– | Raw lands first, transform in-warehouse | Fivetran, Airbyte, dbt | Cloud data warehouses (Snowflake/BigQuery) |
-| **Gen 3.5 — AI-augmented** | 2023– | LLMs for unstructured extraction, schema inference | Unstructured.io, LlamaParse, Claude | Semi-structured docs, PDFs, layout-drift scraping |
-
-**koshi is Gen 3.5 in shape but Gen 1 in discipline.** Its sources are
-unstructured government HTML/PDF that resist naive scraping (hence the tier
-strategy and the reserved LLM fallback), but its *operating model* is
-classic batch ETL — 16 known pages, monthly/quarterly cadence, no real-time
-requirement. It is deliberately **not** streaming and **not** ELT-in-a-warehouse.
-
-### 3.2 The five production patterns koshi adopts (or consciously declines)
-
-| Pattern | Adopted? | Where it lands in koshi |
-|---|---|---|
-| **1. Watermark** (hash → `last_changed_at` vs `last_extracted_at`) | ✅ Already built | `pipeline.py::_needs_extraction` — the anti-freeze mechanism |
-| **2. Multi-tier extraction** (Zillow/Airbnb/Stripe) | ✅ Adopted, trimmed | §5 — only tiers 2 & 5 are active this pass |
-| **3. Idempotency by natural key** (Stripe/GitHub) | ✅ Already built | `eoi_rounds` unique constraint + in-batch `staged_keys` dedup |
-| **4. Dead-letter queue** (Netflix/Uber) | ⏳ Documented, not built | §8 — GCS `koshi-dlq/` + `replay` command |
-| **5. Content-freshness monitoring** | ⏳ Documented, not built | `source_pages.last_checked_at` exists; a staleness check is deferred |
-
-### 3.3 The fastest path to production (and the shape of that stack)
-
-```
-Cloud Run Job (per-source, per-cadence)          ← later; manual `python -m koshi` today
-        ↓
-Python 3.11 + httpx (fetch) + BS4/lxml (deterministic) + [Claude Haiku — reserved, not built]
-        ↓
-Postgres (source_pages → extraction → fact tables)
-        ↓
-FastAPI (Cloud Run Service) → lukla
-```
-
-Full per-tool alternatives and reasoning live in §12.
+| **Raw Snapshots** | Bronze | Original source artifact — request/response/headers/manifest — captured before any processing | ✅ Append-only, never mutated | GCS `koshi-raw/` + manifest in Postgres |
+| **Canonical Records** | Silver | Cleaned, validated records extracted via contracts — deduped by natural key, quality-checked | ✅ Idempotent inserts; existing rows never mutated | Postgres fact tables |
+| **Normalized Facts** | Gold | Denormalized, query-optimized facts ready for the API — joined, enriched, versioned as releases | ✅ Published as immutable `dataset_releases` | Postgres (serving schema) + Parquet (analytics) |
 
 ---
 
-## 4. The complete source catalog (16 sources, 5 tiers)
+## 3. The Source → Resource → Snapshot Model
 
-**Confirmed decision: no PDF (tier 3) or Claude-fallback (tier 4) extraction
-is built in this pass.** Every remaining source resolves to tier 2
-(deterministic HTML) or tier 5 (manual YAML curation). This deliberately
-deviates from the original spec's tentative tier-4 assignment for a couple of
-small-row-count sources.
+The acquisition architecture models sources hierarchically:
 
-| # | Source | Tier | Tooling | Feeds | Note |
+```
+Source (e.g., homeaffairs.gov.au)
+  └── Resource (e.g., /visa-fees page)
+        ├── Snapshot (2026-08-16, content_hash=abc123)
+        │     ├── request.json
+        │     ├── response.html
+        │     ├── headers.json
+        │     ├── manifest.json
+        │     └── extraction_result.json  ← populated after extraction
+        └── Snapshot (2026-09-01, content_hash=def456)
+              └── ...
+```
+
+**Key insight**: One source may have multiple resources (a fees page, a PDF
+report, an API endpoint), and each resource has independent snapshot history.
+This lets koshi:
+
+- Compare providers on the same input (re-extract from snapshot, not re-fetch).
+- Replay extraction without re-acquiring (cost saving for managed providers).
+- Debug extraction failures with full request/response context.
+- Audit any published fact back to the exact bytes it came from.
+
+### Source Types
+
+| Type | Acquisition Strategy | Example |
+|---|---|---|
+| **URL** (HTML page) | `httpx` (deterministic) or Playwright (JS-rendered) or managed fetch (anti-bot) | Home Affairs visa fees page |
+| **API** (JSON endpoint) | `httpx` with API-specific auth | Government open-data APIs |
+| **PDF** (report) | `httpx` download → `pdfplumber` / `marker-pdf` | Occupation ceiling PDF |
+| **File** (static dataset) | Download → `pandas` / `openpyxl` | JSA skills priority spreadsheet |
+
+### Control Plane Tables
+
+```sql
+CREATE TABLE sources (
+    source_id TEXT PRIMARY KEY,
+    name TEXT,
+    description TEXT,
+    domain TEXT,
+    created_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ
+);
+
+CREATE TABLE resources (
+    resource_id TEXT PRIMARY KEY,
+    source_id TEXT REFERENCES sources(source_id),
+    resource_type TEXT,  -- "url" | "pdf" | "api" | "file"
+    locator JSONB,       -- {url: "...", method: "GET", headers: {...}}
+    acquisition_strategy TEXT,  -- "http" | "browser" | "api_client" | "managed"
+    created_at TIMESTAMPTZ
+);
+
+CREATE TABLE snapshots (
+    snapshot_id UUID PRIMARY KEY,
+    resource_id TEXT REFERENCES resources(resource_id),
+    retrieved_at TIMESTAMPTZ,
+    acquisition_strategy TEXT,
+    http_status INT,
+    content_type TEXT,
+    content_hash TEXT,    -- sha256:abc123...
+    etag TEXT,
+    last_modified TEXT,
+    gcs_path TEXT,        -- gs://koshi-raw/source_id=.../resource_id=.../...
+    request_json JSONB,
+    response_headers JSONB,
+    manifest JSONB,
+    acquisition_duration_ms INT,
+    created_at TIMESTAMPTZ
+);
+```
+
+---
+
+## 4. Control Plane
+
+**Purpose**: Define what should happen — configuration, policies, schedules.
+The control plane is declarative: adding a new source means registering it
+in the control plane, not writing new boilerplate orchestration code.
+
+### Tables
+
+```sql
+CREATE TABLE sources (           -- see §3)
+CREATE TABLE resources (         -- see §3)
+CREATE TABLE snapshots (         -- see §3)
+
+CREATE TABLE extraction_strategies (
+    strategy_id TEXT PRIMARY KEY,
+    strategy_type TEXT,  -- "html_table" | "pdf_parser" | "semantic_extraction"
+    provider TEXT,       -- "custom" | "firecrawl" | "apify" | "zyte"
+    config JSONB,        -- schema, prompt, CSS selector
+    priority INT,        -- 0 = first try, 1 = fallback
+    created_at TIMESTAMPTZ
+);
+
+CREATE TABLE contracts (
+    contract_id TEXT PRIMARY KEY,
+    name TEXT,           -- "VisaFeeRecord", "OccupationRecord"
+    version TEXT,        -- "v1"
+    schema JSONB,        -- Pydantic schema as JSON
+    domain TEXT,         -- "visa" | "nepal_earth"
+    created_at TIMESTAMPTZ
+);
+
+CREATE TABLE quality_policies (
+    policy_id TEXT PRIMARY KEY,
+    contract_id TEXT REFERENCES contracts(contract_id),
+    expected_min_records INT,
+    expected_max_records INT,
+    max_change_percent DECIMAL,
+    required_fields TEXT[],
+    uniqueness_fields TEXT[],
+    block_on TEXT[],     -- ["schema_error", "required_field_missing", ...]
+    semantic_drift_threshold DECIMAL DEFAULT 0.8,
+    created_at TIMESTAMPTZ
+);
+
+CREATE TABLE schedules (
+    schedule_id TEXT PRIMARY KEY,
+    source_id TEXT REFERENCES sources(source_id),
+    cadence TEXT,        -- "daily" | "weekly" | "monthly" | "quarterly" | "annual"
+    freshness_sla INTERVAL,
+    priority INT,        -- 1-10
+    enabled BOOLEAN DEFAULT true
+);
+```
+
+### Source Registry (Domain Config)
+
+`src/koshi/sources/domains.yaml` ports the politeness settings from
+`research/au-visa-sources/config.yaml`:
+
+```yaml
+domains:
+  homeaffairs.gov.au:
+    max_pages_per_domain: 15
+    request_delay: 1.0
+    timeout: 15
+  jobsandskills.gov.au:
+    max_pages_per_domain: 10
+    request_delay: 1.0
+    timeout: 15
+  # ...
+
+crawler:
+  max_pages_per_run: 300
+```
+
+**Scoping call**: This is politeness limits, **not** an autonomous
+link-following crawler. koshi's whole catalog is specific, already-known URLs,
+each an explicit `SourceSpec` in the registry.
+
+---
+
+## 5. Data Plane
+
+**Purpose**: Execute what needs to happen — acquisition, extraction,
+validation, quality checks, normalization, and publication.
+
+### 5.1 Acquisition Layer — Immutable Raw Snapshots
+
+Acquisition is **separate from extraction**. The raw source artifact is
+captured before any processing occurs.
+
+**Acquisition strategies**:
+- **HTTP**: `httpx` for HTML, PDF, JSON APIs.
+- **Browser**: Playwright for JS-rendered pages.
+- **API client**: Specialized clients (e.g., government API SDKs).
+- **Managed fetch**: Zyte API for blocked/anti-bot sites.
+
+**Snapshot storage layout** (GCS):
+
+```text
+gs://koshi-raw/
+  source_id=homeaffairs-visa-fees/
+    resource_id=/visa-fees/
+      retrieved_date=2026-08-16/
+        content_hash=abc123/
+          request.json          # {method, url, headers, body}
+          response.html         # or response.json, response.pdf
+          headers.json          # HTTP response headers
+          screenshot.png        # optional, for browser acquisition
+          manifest.json         # metadata
+          extraction_result.json  # populated after extraction
+```
+
+**Manifest schema**:
+
+```json
+{
+  "source_id": "homeaffairs-visa-fees",
+  "resource_id": "/visa-fees",
+  "retrieved_at": "2026-08-16T03:00:00Z",
+  "acquisition_strategy": "http",
+  "http_status": 200,
+  "content_type": "text/html",
+  "content_hash": "sha256:abc123...",
+  "etag": "\"xyz789\"",
+  "last_modified": "2026-08-15T12:00:00Z",
+  "request_id": "req_abc123",
+  "acquisition_duration_ms": 1234
+}
+```
+
+**Conditional requests**: Use ETag/Last-Modified to avoid re-downloading
+unchanged content. The snapshot is only created when content actually changes.
+
+**Why immutable snapshots matter**:
+- Replay any extraction without re-acquiring (cost-saving for managed providers).
+- Compare providers on identical input.
+- Debug extraction failures with full context.
+- Audit published facts back to original source bytes.
+
+### 5.2 Extraction Layer — Quality-Aware Provider Fallback
+
+**Deterministic-first, managed-fallback** strategy. The provider ladder:
+
+1. **Custom (`httpx` + `lxml`/BeautifulSoup)** — zero cost, fastest, used for
+   deterministic HTML tables.
+2. **Firecrawl** — LLM-powered schema extraction for complex pages. ~$0.05/verified extraction.
+3. **Apify** — Actor-based extraction with custom logic. ~$0.05–0.50/1K pages.
+4. **Zyte** — Anti-bot / JS-rendered page extraction. Cost varies.
+
+**Quality-aware fallback algorithm**:
+
+```python
+async def extract_with_quality_aware_fallback(
+    resource: Resource,
+    strategies: list[ExtractionStrategy],
+    contract: Contract,
+    quality_policy: QualityPolicy,
+) -> ExtractionResult:
+    """Try providers in priority order. Only accept if quality gates pass."""
+    for strategy in sorted(strategies, key=lambda s: s.priority):
+        # Try extraction
+        result = await strategy.extract(resource, strategy.config)
+
+        # Validate against contract schema
+        if not validate_schema(result.records, contract.schema):
+            logger.warning("Schema validation failed for provider=%s", strategy.provider)
+            continue
+
+        # Run quality checks
+        quality = await run_quality_checks(
+            result.records, quality_policy,
+            previous_snapshot=resource.last_snapshot,
+        )
+
+        if quality.status == "PASS":
+            return result
+        elif quality.status == "WARNING":
+            log_warnings(quality.warnings)
+            return result  # Accept with warnings logged
+        # If ERROR/BLOCKER, try next provider
+
+    raise ExtractionFailedError("All providers failed quality gates")
+```
+
+**Provider selection config**:
+
+```yaml
+extraction_strategies:
+  - strategy_id: homeaffairs-visa-fees-extract
+    strategy_type: html_table
+    provider: custom          # priority 0 — try first
+    config:
+      css_selector: "#visa-fees-table"
+      field_mapping: { ... }
+
+  - strategy_id: homeaffairs-visa-fees-extract-fallback
+    strategy_type: semantic_extraction
+    provider: firecrawl       # priority 1 — fallback
+    config:
+      schema: { ... }
+```
+
+**Cost optimization**:
+- Custom HTML parser: ~$0 (your infra).
+- Firecrawl: $0.05/verified extraction or credits + token subscription.
+- Apify: $0.05–$0.50/1K pages depending on Actor.
+- Zyte: Variable (anti-bot proxy costs).
+
+Use managed providers only when deterministic extraction fails quality gates.
+
+### 5.3 Canonical Contracts (Silver)
+
+**Purpose**: Decouple extraction from storage. Domain-agnostic engine,
+domain-specific contracts defined as Pydantic models.
+
+```python
+class VisaFeeRecord(BaseModel):
+    """Silver contract for visa fee extraction."""
+    visa_code: str
+    base_application_cost: Decimal
+    effective_date: date
+    source_url: str
+    retrieved_at: datetime
+    reliability_tier: Literal["official_scraped", "official_curated", "derived"]
+    provider: str
+    extraction_timestamp: datetime
+    schema_version: str = "v1"
+
+class OccupationRecord(BaseModel):
+    """Silver contract for ANZSCO occupation extraction."""
+    code: str
+    name: str
+    unit_group: str
+    source_url: str
+    retrieved_at: datetime
+    reliability_tier: Literal["official_scraped"]
+    provider: str = "custom"
+    extraction_timestamp: datetime
+    schema_version: str = "v1"
+```
+
+**Benefits**:
+- Parser tests are independent of database schema.
+- Multiple storage projections (Postgres, Parquet, BigQuery).
+- Schema evolution without breaking extraction.
+- Validation at the boundary (Pydantic rejects invalid data before it reaches storage).
+
+### 5.4 Quality Engine
+
+The quality engine gates every record before it reaches Gold publication.
+
+#### Severity Levels
+
+| Level | Meaning | Publication Behavior |
+|---|---|---|
+| **INFO** | Minor anomalies | Logged, always passes |
+| **WARNING** | Notable changes, may require review | Passes with warnings logged, alert sent |
+| **ERROR** | Significant issues | Blocks publication unless explicitly overridden |
+| **BLOCKER** | Critical failures | Always blocks publication; records → quarantine |
+
+#### Quality Checks
+
+| Check | Severity on Failure | Description |
+|---|---|---|
+| **Schema validation** | BLOCKER | Pydantic model validation rejects invalid records |
+| **Row-count drift** | WARNING (>30%), BLOCKER (>80%) | Compare against dataset-specific expected range |
+| **Duplicate detection** | BLOCKER | Natural key uniqueness constraint violation |
+| **Required fields** | BLOCKER | Expected required fields missing |
+| **Enumerated values** | ERROR | Value not in known vocabulary |
+| **Date plausibility** | WARNING | `effective_date` in the future or implausible |
+| **Cross-field consistency** | ERROR | e.g., `base_application_cost > 0` |
+| **Semantic drift** | WARNING or ERROR | LLM-detected meaning change in source text |
+
+#### Dataset-Specific Quality Policies
+
+```yaml
+quality_policies:
+  - contract_id: VisaFeeRecord
+    expected_min_records: 10
+    expected_max_records: 50
+    max_change_percent: 30
+    required_fields: [visa_code, base_application_cost]
+    uniqueness_fields: [visa_code]
+    block_on: [schema_error, required_field_missing, duplicate_primary_key]
+
+  - contract_id: EOIRoundRecord
+    expected_min_records: 1
+    expected_max_records: 10
+    max_change_percent: 100  # EOI rounds vary widely
+    required_fields: [visa_code, occupation_code, round_date]
+    uniqueness_fields: [visa_code, occupation_code, round_date]
+```
+
+#### Semantic Drift Detection
+
+Uses an LLM to compare source text across snapshots, detecting when the
+*semantic meaning* changes — not just the schema or byte-level content:
+
+```python
+async def detect_semantic_drift(
+    current_snapshot: Snapshot,
+    previous_snapshot: Snapshot,
+) -> SemanticDriftResult:
+    prompt = f"""
+    Compare these two versions of a government policy page.
+    Has the meaning changed materially (not just formatting)?
+
+    Previous version:
+    {previous_snapshot.text[:5000]}
+
+    Current version:
+    {current_snapshot.text[:5000]}
+
+    Respond with JSON:
+    {{
+      "semantic_drift_detected": true/false,
+      "summary": "...",
+      "confidence": 0.0-1.0
+    }}
+    """
+    response = await llm.generate(prompt, response_format="json")
+    return SemanticDriftResult(**response)
+```
+
+#### Publication Gate
+
+```python
+if quality_result.status == "PASS":
+    publish(canonical_records)
+elif quality_result.status == "WARNING":
+    publish(canonical_records)
+    alert_team(quality_result.warnings)
+elif quality_result.status in ("ERROR", "BLOCKER"):
+    quarantine(quality_result.rejected_records)
+    alert_team(quality_result.errors)
+    # Optionally: publish previous known-good release to avoid data gaps
+```
+
+### 5.5 Normalization & Gold Layer
+
+Silver canonical records are normalized into Gold facts:
+
+- **Deduplication** by natural key (DB unique constraint + in-batch `staged_keys`).
+- **Enrichment** — joins across tables (e.g., occupation name onto EOI rounds).
+- **Derivation** — computed facts (momentum) from Gold rows, citing source rows.
+- **Projection** — storage-optimized schemas for Postgres serving and Parquet analytics.
+
+### 5.6 Generic Execution Model (pipeline_runs)
+
+Every run is tracked in a unified `pipeline_runs` table for end-to-end lineage:
+
+```sql
+CREATE TABLE pipeline_runs (
+    run_id UUID PRIMARY KEY,
+    parent_run_id UUID REFERENCES pipeline_runs(run_id),  -- for nested tasks
+    run_type TEXT,  -- "acquisition" | "extraction" | "validation" | "quality" | "publication"
+    source_id TEXT,
+    resource_id TEXT,
+    snapshot_id UUID REFERENCES snapshots(snapshot_id),
+    status TEXT,    -- "pending" | "running" | "success" | "failure" | "blocked"
+    started_at TIMESTAMPTZ,
+    finished_at TIMESTAMPTZ,
+    input JSONB,    -- serialized input (snapshot ref, contract ref, strategy ref)
+    output JSONB,   -- serialized output (record count, quality result, release_id)
+    error TEXT,
+    metadata JSONB
+);
+```
+
+**Benefits**:
+- Unified lineage across all stages — trace any Gold fact back to its acquisition.
+- Supports nested tasks (e.g., a publication run has child quality runs).
+- Enables replay of specific stages without re-running the whole pipeline.
+- Audit trail for every decision the quality engine made.
+
+### 5.7 Versioned Releases & Rollback
+
+Every publication creates an immutable `dataset_release`:
+
+```sql
+CREATE TABLE dataset_releases (
+    release_id UUID PRIMARY KEY,
+    created_at TIMESTAMPTZ,
+    status TEXT,        -- "complete" | "partial" | "degraded"
+    contract_id TEXT REFERENCES contracts(contract_id),
+    pipeline_run_ids UUID[],
+    record_count INT,
+    quality_summary JSONB,
+    metadata JSONB,
+    is_current BOOLEAN DEFAULT false
+);
+```
+
+**Release workflow**:
+```
+raw snapshot → extraction → canoncial records → quality gates → candidate release → published release
+```
+
+**API response metadata**:
+
+```json
+{
+  "data": [...],
+  "metadata": {
+    "release_id": "2026-08-16T03:00:00Z",
+    "status": "complete",
+    "contract_id": "VisaFeeRecord",
+    "source_last_updated": "2026-08-10T00:00:00Z",
+    "freshness": "current",
+    "partial": false
+  }
+}
+```
+
+**Rollback**: If a release is discovered to be wrong (semantic drift missed,
+source error), roll back to any prior release:
+
+```sql
+-- Deactivate current release
+UPDATE dataset_releases
+SET is_current = false
+WHERE contract_id = 'VisaFeeRecord' AND is_current = true;
+
+-- Activate previous known-good release
+UPDATE dataset_releases
+SET is_current = true
+WHERE release_id = 'previous_release_id';
+```
+
+The API always serves `is_current = true` releases. Rollback is instantaneous
+— no data migration, no re-extraction.
+
+---
+
+## 6. Source Catalog (Summary)
+
+> **Exhaustive URL catalog and source details are in the sibling doc:**
+> [`docs/superpowers/research/2026-08-16-koshi-source-urls.md`](../research/2026-08-16-koshi-source-urls.md)
+> — all 16 sources with exact URLs, domains, categories, tier assignments,
+> cadence groups, and per-source notes.
+
+| # | Source | Tier | Tooling | Feeds | Status |
 |---|---|---|---|---|---|
 | 1 | ANZSCO occupations | 2 | httpx + BS4/lxml | `occupations` | ✅ built |
 | 2 | EOI invitation rounds | 2 | httpx + BS4/lxml | `eoi_rounds` | ✅ built |
-| 3 | Occupation ceilings | 5 | YAML seed | `ceiling_usage`, `program_allocation` | PDF source, curated |
-| 4 | Visa fees | 2 | httpx + BS4/lxml | `visa_subclasses.base_application_cost` | Update-by-PK, not insert |
+| 3 | Occupation ceilings | 5 | YAML seed | `ceiling_usage`, `program_allocation` | ✅ built (ceiling_usage) |
+| 4 | Visa fees | 2 | httpx + BS4/lxml | `visa_subclasses.base_application_cost` | |
 | 5 | Points test criteria | 2 | httpx + BS4/lxml | `points_criteria_reference` | |
-| 6 | Visa subclass static facts (189/190/491/485/500/482) | 5 | YAML seed | `visa_subclasses` | 6 rows, rare cadence — tier 4 skipped |
-| 7 | Health/character/English requirements | 5 | YAML seed | `eligibility_requirements` | 3 rows, rare cadence |
-| 8 | Processing times | 2 | httpx + BS4/lxml | `processing_times` | Same shape as SkillSelect parser |
-| 9 | MLTSSL/STSOL/ROL → list changes | 2 | httpx + BS4/lxml | `list_change_log` | Confirm legislation.gov.au HTML at build time |
-| 10 | Skills priority list | 2 | BS4/lxml or pandas/openpyxl | `skills_priority_ratings` | Confirm JSA rating vocabulary at build time |
-| 11 | State nomination status (NSW/VIC/QLD/WA/SA) | 5 | YAML seed | `state_nomination_status` | Highest per-row curation effort |
-| 12 | State occupation list changes | 1→5 | `source_pages` hash-diff → YAML seed | `list_change_log` | Tier 1 is the trigger, tier 5 the write |
-| 13 | Assessing bodies + join | 5 | Two YAML seeds | `assessing_bodies`, `occupation_assessing_bodies` | New domain: `mara.gov.au` |
-| 14 | Policy events | 5 | YAML seed | `policy_events` | Editorial; new domains `budget.gov.au`/`treasury.gov.au` |
-| 15 | Application funnel — submitted/invited | 2 | Piggybacked on existing SkillSelect fetch | `application_funnel` | Don't fetch the same URL twice |
-| 16 | Application funnel — granted | 5 (or `NULL`) | YAML seed once confirmed | `application_funnel.granted_count` | Weakest-sourced field |
-| — | Occupation momentum | derived | computed | `occupation_momentum` | Never scraped |
-| — | Points distribution | deferred | — | `points_distribution` | No confirmed source exists |
+| 6 | Visa subclass static facts | 5 | YAML seed | `visa_subclasses` | 6 rows |
+| 7 | Health/character/English requirements | 5 | YAML seed | `eligibility_requirements` | 3 rows |
+| 8 | Processing times | 2 | httpx + BS4/lxml | `processing_times` | |
+| 9 | MLTSSL/STSOL/ROL list changes | 2 | httpx + BS4/lxml | `list_change_log` | |
+| 10 | Skills priority list | 2 | BS4/lxml or pandas/openpyxl | `skills_priority_ratings` | |
+| 11 | State nomination status | 5 | YAML seed | `state_nomination_status` | |
+| 12 | State occupation list changes | 1→5 | hash-diff → YAML seed | `list_change_log` | |
+| 13 | Assessing bodies + join | 5 | Two YAML seeds | `assessing_bodies`, `occupation_assessing_bodies` | |
+| 14 | Policy events | 5 | YAML seed | `policy_events` | |
+| 15 | Application funnel — submitted/invited | 2 | Piggybacked on SkillSelect fetch | `application_funnel` | |
+| 16 | Application funnel — granted | 5 or NULL | YAML seed | `application_funnel.granted_count` | |
 
-**Tiers 3/4 stay tooling-pre-researched, not built.** If a future source
-genuinely needs them: PDF → `pdfplumber` first, `marker-pdf` (free, local) or
-Claude vision second; Claude fallback → **Haiku** (not Sonnet/Opus — prose
-extraction is a Haiku-class task, ~$0.001/page vs Sonnet's $0.015),
-structured-output JSON-schema mode, `max_retries=1` (bato's documented lesson:
-`bato/api/llm.py:38-40`). This research is real and worth keeping even though
-nothing in this pass schedules building it.
+**Tiers 3/4 (PDF/LLM) stay tooling-pre-researched, not built.** If a future
+source genuinely needs them: PDF → `pdfplumber` first, `marker-pdf` second,
+Claude vision third; LLM → **Haiku** (not Sonnet/Opus — extraction is a
+Haiku-class task, ~$0.001/page), structured-output JSON-schema mode,
+`max_retries=1`.
 
----
-
-## 5. Extraction tier strategy
-
-Five tiers, of which **two are active** this pass.
-
-| Tier | Name | Reliability tier | Built this pass? |
-|---|---|---|---|
-| 1 | Crawl (discovery/change-detection) | — | ✅ (as `source_pages` hash-diff) |
-| 2 | Deterministic HTML | `official_scraped` | ✅ |
-| 3 | PDF | `official_curated` | ❌ pre-researched |
-| 4 | LLM fallback | `official_curated` | ❌ pre-researched |
-| 5 | Manual curation (YAML → git → loader) | `official_curated` | ✅ |
-
-### 5.1 The tier decision tree
+### Tier Decision Tree
 
 ```mermaid
 flowchart TD
-    A["Source page fetched"] --> B{"HTML with a<br/>stable table?"}
-    B -->|"yes"| C["Tier 2 — deterministic BS4/lxml<br/>reliability_tier = official_scraped"]
+    A["Source acquired"] --> B{"HTML with a<br/>stable table?"}
+    B -->|"yes"| C["Tier 2 — deterministic BS4/lxml<br/>Provider: custom (httpx + BS4)<br/>reliability_tier = official_scraped"]
     B -->|"no, PDF report"| D["Tier 3 — pdfplumber → marker-pdf → Claude vision<br/>(pre-researched, NOT built)"]
     B -->|"no, prose / resists parsing"| E["Tier 5 — human-curated YAML seed<br/>reliability_tier = official_curated"]
-    D -.->|"if it ever gets built"| F["Tier 4 fallback<br/>reliability_tier = official_curated"]
+    D -.->|"if built"| F["Tier 4 — LLM fallback<br/>Provider: Claude Haiku<br/>reliability_tier = official_curated"]
 
     style C fill:#199e70,color:#fff
     style E fill:#199e70,color:#fff
@@ -261,33 +762,16 @@ flowchart TD
     style F fill:#888,color:#fff
 ```
 
-### 5.2 Tier 2 — deterministic parser (the only extraction tier this pass)
-
-Each parser is one module in `extraction/`, calls `require_provenance()` before
-constructing a single row, uses an explicit selector (CSS id/class, never
-"find any table"), and raises on missing expected structure so the watermark
-retries next run. Test fixtures are real saved HTML in `tests/fixtures/`.
-
-### 5.3 Tier 5 — manual curation (the honest fallback)
-
-koshi already ships this pattern (`seeds/ceiling_usage_manual.yaml` +
-`seeds/loader.py`). Curated YAML is version-controlled in git, carries a
-`source_url` + `retrieved_at` + `reliability_tier="official_curated"`, and is
-reviewed against the live source on a documented cadence. This is **bato's
-pattern** — reuse it, don't reinvent it. `documents_required` (a display-only
-list) is stored as `jsonb` rather than a join table.
-
 ---
 
-## 6. The complete data model (18 tables)
+## 7. Domain Model (Summary)
 
-Convention, matching the 5 already-built tables: SQLAlchemy 2.0 `Mapped[...]`,
-one model file per table, the provenance trio as the last three columns
-(except on derived tables), constraints declared via `__table_args__` (so
-`tests/test_alembic_migrations.py` keeps catching drift), one Alembic migration
-per table.
+> **Exhaustive schema, ERD, and migration details are in the sibling doc:**
+> [`docs/superpowers/research/2026-08-16-koshi-data-model.md`](../research/2026-08-16-koshi-data-model.md)
+> — all 18 tables with column definitions, constraints, FK relationships,
+> migration numbering, and provenance conventions.
 
-### 6.1 Entity-relationship diagram
+### Entity-Relationship Diagram
 
 ```mermaid
 erDiagram
@@ -320,7 +804,7 @@ erDiagram
         string permanence
         string age_limit
         bool occupation_list_required
-        string onward_pathway_code FK "self, nullable — 2-pass seed"
+        string onward_pathway_code FK "self, nullable"
         numeric base_application_cost
         bool points_test_required
     }
@@ -337,240 +821,299 @@ erDiagram
         int threshold_points
         int invitations_issued
     }
-    source_pages {
-        int id PK
-        string url UK
-        string domain
-        string category
-        string content_hash
-        datetime last_changed_at
-        datetime last_extracted_at
-        string status
-    }
 ```
 
-> **Not drawn above** (for readability): the remaining reference tables —
+> Standalone reference tables not shown above (for readability):
 > `points_criteria_reference`, `english_test_bands`, `eligibility_requirements`,
-> `program_allocation` — have no FKs (standalone reference/aggregate rows).
-> `source_pages` (drawn) is the crawl registry — metadata, not a fact, so it
-> carries no provenance trio.
+> `program_allocation`, `policy_events` — all carry provenance but have no FKs.
 
-### 6.2 New tables (migrations `0007`–`0019`)
+### Table Inventory (18 tables)
 
-| Migration | Table | Kind | Key constraints / notes |
+| Migration | Table | Kind | Key constraints |
 |---|---|---|---|
-| 0007 | `visa_subclasses` | reference | `code` PK; self-FK `onward_pathway_code` (nullable, **2-pass seed**) |
-| 0008 | `english_test_bands` | reference | surrogate `id` PK + `UniqueConstraint(test_name, band_level)` |
+| 0001–0006 | `occupations`, `eoi_rounds`, `ceiling_usage`, `occupation_momentum`, `source_pages` | (built) | Provenance trio on all fact tables |
+| 0007 | `visa_subclasses` | reference | `code` PK; self-FK `onward_pathway_code` (nullable, 2-pass seed) |
+| 0008 | `english_test_bands` | reference | `UniqueConstraint(test_name, band_level)` |
 | 0009 | `assessing_bodies` | reference | `body_name` PK |
-| 0010 | `occupation_assessing_bodies` | join | composite PK `(occupation_code, body_name)` |
+| 0010 | `occupation_assessing_bodies` | join | Composite PK `(occupation_code, body_name)` |
 | 0011 | `points_criteria_reference` | reference | `UniqueConstraint(criterion_name, band_description)` |
-| 0012 | `policy_events` | editorial | `visa_code` FK nullable (national events) |
-| 0013 | `state_nomination_status` | fact | `status` CHECK `open/limited/closed`; `UniqueConstraint(state_code, occupation_code, as_of_date)`; `documents_required` jsonb |
+| 0012 | `policy_events` | editorial | `visa_code` FK nullable |
+| 0013 | `state_nomination_status` | fact | `status` CHECK `open/limited/closed`; `UniqueConstraint(state_code, occupation_code, as_of_date)` |
 | 0014 | `list_change_log` | fact | `change_type` CHECK `added/removed`; `UniqueConstraint(list_name, occupation_code, change_type, effective_date)` |
 | 0015 | `processing_times` | fact | `UniqueConstraint(visa_code, as_of_date)` |
 | 0016 | `program_allocation` | aggregate | `UniqueConstraint(program_year, stream_name)` |
-| 0017 | `application_funnel` | fact | `UniqueConstraint(visa_code, program_year, as_of_date)`; funnel-order CHECK; **second nullable provenance triple** for `granted_count` |
-| 0018 | `eligibility_requirements` | reference | `requirement_type` unique (`health`/`character`/`english_language`) |
-| 0019 | `skills_priority_ratings` | fact | `UniqueConstraint(occupation_code, as_of_date)`; `shortage_rating` + `future_demand_rating` (nullable) |
+| 0017 | `application_funnel` | fact | `UniqueConstraint(visa_code, program_year, as_of_date)`; funnel-order CHECK; second nullable provenance triple for `granted_count` |
+| 0018 | `eligibility_requirements` | reference | `requirement_type` unique |
+| 0019 | `skills_priority_ratings` | fact | `UniqueConstraint(occupation_code, as_of_date)` |
 
-### 6.3 Provenance convention (unchanged)
+**Control plane tables** (not part of the 18 domain tables): `sources`,
+`resources`, `snapshots`, `extraction_strategies`, `contracts`,
+`quality_policies`, `schedules`, `pipeline_runs`, `dataset_releases`.
+
+### Provenance Convention
 
 Every fact table carries `source_url` / `retrieved_at` / `reliability_tier`
 (`official_scraped` | `official_curated` | `derived`). `occupation_momentum`
 is the only table that omits `source_url` (always `derived`). A reserved
-fourth value, `community_sourced`, exists in the design for a future
-non-official source — nothing uses it yet.
-
-### 6.4 The two previously-unassigned gaps — resolved
-
-1. **Health/character/English reference pages** → `eligibility_requirements`
-   (3 near-static prose pages, not tabular data).
-2. **Skills priority list** (JSA's shortage/demand rating, conceptually
-   distinct from MLTSSL/STSOL/ROL) → `skills_priority_ratings`.
-
-`points_distribution` stays **deferred** — no confirmed source exists anywhere
-in the crawl target list.
-
-Migrations land **just-in-time, one per source slice** (§11's build order), not
-all upfront as an unexercised empty schema.
+fourth value, `community_sourced`, exists for a future non-official source.
 
 ---
 
-## 7. Pipeline architecture — the eight-stage flow
+## 8. Pipeline Architecture — The Full Flow
 
-### 7.1 The full flow
+### 8.1 Medallion Pipeline Flow
 
 ```mermaid
 flowchart TB
-    subgraph ETL["ETL pipeline — python -m koshi"]
-        O["__main__.py — per-step isolation, exit codes"] --> P["pipeline.py — run_source_sync per SourceSpec"]
-        P --> E1["1. EXTRACT — fetch_and_register()"]
-        E1 --> E2["2. HASH + WATERMARK — commit content_hash / last_changed_at"]
-        E2 --> E3{"3. DECIDE — _needs_extraction()?"}
-        E3 -->|"NO"| SKIP["skip (no-op)"]
-        E3 -->|"YES"| E4["4. TRANSFORM — parser (tier-dispatched)"]
-        E4 --> E5["5. VALIDATE — require_provenance()"]
-        E5 --> E6["6. LOAD — persist + dedup by natural key + commit"]
-        E6 --> E7["7. DERIVE — refresh_momentum() (only where affected)"]
-        E7 --> E8["8. ADVANCE — last_extracted_at (only after 4–6 succeed)"]
+    subgraph CONTROL["Control Plane — Declarative"]
+        direction LR
+        SPEC["SourceSpec<br/>source_id, resource_id,<br/>acquisition_strategy"]
+        CONTRACT["Contract<br/>Pydantic schema"]
+        QPOLICY["QualityPolicy<br/>expected_min/max,<br/>block_on, drift_threshold"]
     end
-    DB[("Postgres — source_pages + fact tables")]
-    E2 --> DB
-    E6 --> DB
-    E7 --> DB
-    E8 --> DB
 
-    style E3 fill:#f5a623,color:#fff
-    style SKIP fill:#888,color:#fff
+    subgraph BRONZE["Bronze — Immutable Raw Snapshots"]
+        S["1. ACQUIRE<br/>httpx / Playwright /<br/>managed fetch"]
+        HASH["2. HASH + STORE<br/>content_hash, manifest<br/>→ GCS koshi-raw/"]
+        S --> HASH
+    end
+
+    subgraph SILVER["Silver — Canonical Records"]
+        EXT["3. EXTRACT<br/>deterministic BS4/lxml<br/>→ managed provider fallback"]
+        VAL["4. VALIDATE<br/>Pydantic contract +<br/>provenance gate"]
+        EXT --> VAL
+    end
+
+    subgraph QUALITY["Quality Engine"]
+        QCHECKS["5. QUALITY CHECKS<br/>schema · completeness ·<br/>business rules · semantic drift"]
+        GATE{"6. PUBLICATION GATE"}
+        QCHECKS --> GATE
+    end
+
+    subgraph GOLD["Gold — Published"]
+        NORM["7. NORMALIZE<br/>dedup · enrich · derive"]
+        PUB["8. PUBLISH<br/>versioned release<br/>+ rollback capability"]
+        QN["Quarantine"]
+        GATE -->|"PASS / WARNING"| NORM
+        GATE -->|"ERROR / BLOCKER"| QN
+        NORM --> PUB
+    end
+
+    CONTROL --> BRONZE
+    BRONZE --> SILVER
+    SILVER --> QUALITY
+    PUB --> API["FastAPI → lukla"]
+
+    style BRONZE fill:#cd7f32,color:#fff
+    style SILVER fill:#c0c0c0,color:#000
+    style GOLD fill:#ffd700,color:#000
+    style CONTROL fill:#0b0b0d,color:#fff,stroke:#f5a623
+    style QN fill:#e74c3c,color:#fff
 ```
 
-### 7.2 Stage-by-stage
+### 8.2 Stage-by-Stage
 
-1. **Extract** (`crawler/fetch.py`) — `httpx` GET with split timeout, SHA-256
-   hash of raw bytes, upsert into `source_pages`. Returns `(page, changed,
-   text)`; the parser reuses `text` to avoid a double fetch.
-2. **Hash + watermark** — `content_hash` / `last_changed_at` commit **before**
-   parsing is attempted. This is the "page content changed" watermark.
-3. **Decide** — `_needs_extraction()` compares `last_changed_at` against the
-   *second* watermark `last_extracted_at`. Two different watermarks = two
-   different meanings; this is the anti-freeze mechanism (§8.6).
-4. **Transform** — tier-dispatched parser returns `ParseResult(rows, skipped)`.
-5. **Validate** — `require_provenance()` rejects invalid tier values,
-   non-derived rows without `source_url`/`retrieved_at`, and future-dated
-   `retrieved_at`.
-6. **Load** — dedup by natural key (DB existence check **plus** in-batch
-   `staged_keys`, required because `autoflush=False` means an earlier
-   `session.add()` isn't visible to the next iteration's `SELECT`), then commit.
-7. **Derive** — `refresh_momentum()` for every occupation a new round touched.
-8. **Advance** — `last_extracted_at = now()` **only after** stages 4–6 all
-   succeed.
+1. **Acquire** — HTTP/browser/managed fetch per resource's `acquisition_strategy`. Content is hashed (SHA-256) and stored immutably in GCS `koshi-raw/` with a manifest.
+2. **Hash + Store** — Content hash and manifest committed to Postgres `snapshots` table. The snapshot exists before any extraction is attempted.
+3. **Extract** — Tier-dispatched extraction from the raw snapshot (not a re-fetch). Deterministic BS4/lxml first; managed providers (Firecrawl/Apify/Zyte) only if quality gates fail.
+4. **Validate** — Pydantic contract validation enforces schema at the boundary. `require_provenance()` rejects invalid tier values, non-derived rows without `source_url`/`retrieved_at`, and future-dated `retrieved_at`.
+5. **Quality Checks** — Severity-based checks (INFO/WARNING/ERROR/BLOCKER) against dataset-specific quality policies. Includes semantic drift detection.
+6. **Publication Gate** — PASS/WARNING → proceed to normalization; ERROR/BLOCKER → quarantine.
+7. **Normalize** — Dedup by natural key, enrich via joins, derive computed facts (momentum).
+8. **Publish** — Versioned `dataset_release` created; `is_current` flag updated. Previous known-good release preserved for rollback.
 
-### 7.3 Source-registry pattern (Phase 1 refactor)
+### 8.3 The Two-Watermark Design (Preserved from Current Codebase)
 
-Today, adding a source means a new hardcoded URL constant plus a hand-written
-`sync_*` function copying the same fetch→decide→parse→persist→watermark→commit
-skeleton. A new `src/koshi/source_registry.py` replaces that:
+The existing two-watermark anti-freeze mechanism is carried forward and
+generalized:
 
-```python
-class ExtractionTier(enum.IntEnum):
-    CRAWL = 1; HTML = 2; PDF = 3; LLM_FALLBACK = 4; MANUAL_CURATION = 5
+- **`source_pages.content_hash` / `last_changed_at`** — committed BEFORE extraction. This is the "page content changed" watermark.
+- **`source_pages.last_extracted_at`** — advanced ONLY AFTER extraction + persist both succeed. This is the "we successfully processed this" watermark.
 
-@dataclass(frozen=True)
-class SourceSpec:
-    key: str; url: str; domain: str; category: str
-    tables: tuple[str, ...]      # one page can feed >1 table
-    tier: ExtractionTier
-    reliability_tier: str
-    cadence: str = ""; notes: str = ""
+If parsing fails, `last_extracted_at` is NOT advanced, so the next run retries
+automatically from the raw snapshot — no re-fetch needed, no freeze.
 
-def run_source_sync(session, spec, *, parser, persist, client=None) -> list[Base]:
-    page, _changed, text = fetch_and_register(session, url=spec.url, ...)
-    if not _needs_extraction(page):
-        return []
-    rows = parser(text, source_url=spec.url, retrieved_at=now)
-    new_rows = persist(session, rows)
-    page.last_extracted_at = now
-    session.commit()
-    return new_rows
-```
+### 8.4 Orchestration Contract
 
-`sync_anzsco_occupations` / `sync_skillselect_rounds` become thin wrappers with
-a `persist_merge_by_pk` / `persist_dedup_by_natural_key` strategy each —
-**existing public signatures don't change**, so `tests/test_pipeline.py` needs
-no changes for this refactor alone. `__main__.py` becomes
-`for spec in SOURCE_REGISTRY.values(): ...`.
-
-**Domain config:** `src/koshi/sources/domains.yaml` ports
-`research/au-visa-sources/config.yaml`'s domain list and politeness settings
-(`max_pages_per_run: 300`, `max_pages_per_domain: 15`, `request_delay: 1.0s`,
-`timeout: 15s`), plus the two flagged-missing domains. **Scoping call:** this
-is politeness limits, **not** an autonomous link-following crawler — koshi's
-whole catalog is specific, already-known URLs, each an explicit `SourceSpec`.
-
-### 7.4 The orchestration contract
-
-Every `sync_*` / registry entry holds: returns `list[Model]` (rows persisted);
-empty is never an error ("nothing new"); a parse failure propagates and
-`last_extracted_at` is **not** advanced; each source is independently runnable.
+Every source sync holds:
+- Returns `list[Model]` (rows persisted); empty is never an error ("nothing new").
+- A parse failure propagates and `last_extracted_at` is **not** advanced.
+- Each source is independently runnable.
+- The source registry (`src/koshi/source_registry.py`) replaces hand-written
+  `sync_*` boilerplate — `sync_anzsco_occupations`/`sync_skillselect_rounds`
+  become thin wrappers; new sources register declaratively.
 
 ---
 
-## 8. Fault tolerance & resilience
+## 9. Provider Strategy & Phase-0 Bake-Off
+
+### 9.1 Provider Ladder
+
+koshi uses a **quality-aware fallback** provider strategy. Providers are tried
+in priority order; the first that passes quality gates wins.
+
+| Priority | Provider | Use Case | Cost | When to Use |
+|---|---|---|---|---|
+| 0 (first) | **Custom** (`httpx` + `lxml`/BS4) | Deterministic HTML tables | $0 | Always first choice |
+| 1 | **Firecrawl** | LLM-powered schema extraction | ~$0.05/record | Complex HTML needing semantic extraction |
+| 2 | **Apify** | Actor-based custom extraction | $0.05–0.50/1K pages | Sites needing JS rendering or custom logic |
+| 3 | **Zyte** | Anti-bot, JS-rendered, blocked sites | Variable | Sites that block direct access |
+
+### 9.2 Phase-0: Provider Bake-Off (Week 1)
+
+**Goal**: Empirically determine the optimal provider configuration before
+committing to any managed provider spend.
+
+**Test URLs** (10 known AU government pages):
+- `https://homeaffairs.gov.au/visas/getting-a-visa/fees-and-charges`
+- `https://www.jobsandskills.gov.au/data/occupation-and-industry-profiles/occupations-anzsco`
+- `https://immi.homeaffairs.gov.au/visas/getting-a-visa/visa-processing-times/global-visa-processing-times`
+- `https://www.legislation.gov.au/` (MLTSSL/STSOL/ROL pages)
+- ... (6 more representative pages across tiers 2–5)
+
+**Test Criteria**:
+
+| Criterion | Measurement |
+|---|---|
+| **Accuracy** | Schema compliance, field correctness against ground truth |
+| **Cost** | Per-1K-pages extrapolated cost |
+| **Latency** | End-to-end time from provider call to validated records |
+| **Failure rate** | Timeouts, blocks, empty results |
+| **Schema consistency** | Same output schema across repeated runs |
+
+**Test Plan**:
+
+```python
+urls = [
+    "https://homeaffairs.gov.au/visas/getting-a-visa/fees-and-charges",
+    # ... 9 more
+]
+
+schema = {
+    "type": "object",
+    "properties": {
+        "visa_code": {"type": "string"},
+        "base_application_cost": {"type": "number"},
+    }
+}
+
+for provider in ["custom", "firecrawl", "apify"]:
+    results = await provider.extract(urls, schema)
+    log_accuracy(results)
+    log_cost(results)
+    log_latency(results)
+    log_failure_rate(results)
+```
+
+**Decision**: Choose primary and fallback providers based on empirical results.
+The bake-off produces a provider configuration that feeds directly into
+`extraction_strategies` control-plane rows.
+
+### 9.3 Cost Model
+
+Instead of a fixed estimate, use a per-component cost model:
+
+```text
+Total cost =
+  acquisition_cost/source +
+  extraction_cost/record +
+  storage_cost/GB +
+  compute_cost/run
+```
+
+| Component | Cost Driver | Estimate (post bake-off) |
+|---|---|---|
+| Acquisition | Per-source HTTP/browser calls | $0–50/mo (mostly free for simple HTTP) |
+| Extraction | Per-record or per-page | Custom: $0; Firecrawl: $0.05/record; Apify: $0.05–0.50/1K pages |
+| Storage | GB/month | GCS: ~$0.02/GB; Postgres: shared ~$25–50/mo |
+| Compute | Cloud Run Job minutes | ~$0 for minutes/month |
+| API | Cloud Run Service | ~$0–5/mo (min-instances 0) |
+| **Total** | | **~$50–150/mo** depending on extraction provider usage |
+
+---
+
+## 10. Regulatory Posture, Provenance & Watermarks
+
+### 10.1 Non-Negotiable Regulatory Posture
+
+Every response describes published facts only — never "you should/can/are
+eligible/will." No scoring, no ranking as "best," no personalized prediction.
+Phrase-ban tests in `tests/test_insights.py` enforce this against advice
+language.
+
+### 10.2 Provenance Trio
+
+Every fact row carries:
+
+| Column | Purpose | Example |
+|---|---|---|
+| `source_url` | The exact URL the fact was acquired from | `https://immi.homeaffairs.gov.au/...` |
+| `retrieved_at` | UTC timestamp of acquisition | `2026-08-16T03:00:00Z` |
+| `reliability_tier` | Confidence classification | `official_scraped` |
+
+**Tier values**:
+- `official_scraped` — Deterministic parser from an official government page.
+- `official_curated` — Human-curated YAML seed, cited against an official source.
+- `derived` — Computed from koshi's own rows (no `source_url`; cites source rows instead).
+- `community_sourced` — **Reserved**, not used yet. For future non-official sources.
+
+### 10.3 The Two-Watermark Design
+
+| Watermark | Column | Meaning | When Committed |
+|---|---|---|---|
+| Content changed | `source_pages.last_changed_at` | The page bytes changed | Before extraction is attempted |
+| Extraction succeeded | `source_pages.last_extracted_at` | We successfully parsed + persisted | After parse + persist both succeed |
+
+This is the anti-freeze mechanism: if parsing fails, `last_extracted_at` is
+NOT advanced, so `_needs_extraction()` returns `True` on every subsequent run
+until the parse finally succeeds. Already built in the current codebase —
+every new source inherits it free via `run_source_sync`.
+
+---
+
+## 11. Fault Tolerance & Resilience
 
 **Verified gap (grep, not impression):** `grep -rn "except" src/koshi/` and
-`grep -rn "logger" src/koshi/` both return **zero** matches today. The retrofit
-below is Phase 0 (§11).
+`grep -rn "logger" src/koshi/` both return **zero** matches today. Phase 0
+is the fault-tolerance retrofit (§14).
 
-### 8.1 New modules & changes
+### 11.1 New Modules & Changes
 
 | Change | What it does |
 |---|---|
-| `logging_config.py` | dual stdout + `RotatingFileHandler` (5MB × 3) → `logs/koshi.log` |
+| `logging_config.py` | Dual stdout + `RotatingFileHandler` (5MB × 3) → `logs/koshi.log` |
 | `resilience.py` | `isolated_item()` (savepoint-scoped per-row isolation), `Throttler`, `parse_int_loose()` |
 | `run_summary.py` | JSON run summary per invocation → `logs/summaries/run_<ts>.json` |
-| `crawler/fetch.py` | split timeout (`connect=10/read=15/write=10/pool=10`), tenacity retry (5 attempts, exp backoff 1→30s), typed `FetchError` |
-| both parsers | per-row `try/except`, `parse_int_loose`, return `ParseResult(rows, skipped)` |
-| `seeds/loader.py` | per-entry isolation → generalized `load_seed_rows(path, *, row_builder, extra_validators)` |
-| `pipeline.py` | per-occupation try/except around the momentum loop |
-| `__main__.py` | per-step try/except + rollback + exit codes + run-summary wiring |
+| `crawler/fetch.py` | Split timeout (`connect=10/read=15/write=10/pool=10`), tenacity retry (5 attempts, exp backoff 1→30s), typed `FetchError` |
+| Both parsers | Per-row `try/except`, `parse_int_loose`, return `ParseResult(rows, skipped)` |
+| `seeds/loader.py` | Per-entry isolation → generalized `load_seed_rows(path, *, row_builder, extra_validators)` |
+| `pipeline.py` | Per-occupation try/except around momentum loop |
+| `__main__.py` | Per-step try/except + rollback + exit codes + run-summary wiring |
 
-### 8.2 `isolated_item` — why a bare try/except isn't enough
+### 11.2 Failure Modes
 
-A bare `try/except` around `session.add()` does **not** isolate a bad row:
-Postgres aborts the *whole transaction* on a failed statement unless a
-SAVEPOINT scopes the failure. `isolated_item()` uses `session.begin_nested()`
-(a Postgres SAVEPOINT), logs, and swallows the exception so one bad item
-doesn't poison the enclosing transaction.
+| Failure mode | Target behavior |
+|---|---|
+| Network timeout / transient 5xx | Retry w/ backoff (tenacity), then `FetchError` |
+| 404/410 | Mark `source_pages.status='dead'`, skip, continue (open design question — §16) |
+| Malformed row | Skip + log that row, keep the rest |
+| DB commit failure | `session.rollback()` per step; `isolated_item()` per row |
+| One step fails | Per-step try/except — every step attempts; summary + exit code report which |
 
-### 8.3 Failure modes — reference table
+### 11.3 Exit Code Signaling
 
-| Failure mode | Current behavior | Target behavior |
-|---|---|---|
-| Network timeout / transient 5xx | Unhandled, crashes the sync | Retry w/ backoff (tenacity), then `FetchError` |
-| 404/410 | Unhandled | See §8.4 (an open decision — don't silently drop it) |
-| Malformed row | Whole page/file aborts | Skip + log that row, keep the rest |
-| DB commit failure | No rollback, propagates | `session.rollback()` per step; `isolated_item()` per row |
-| One step fails | Later steps never run | Per-step try/except — every step attempts; summary + exit code report which |
+- `0` — clean success, all steps passed.
+- `2` — partial failure (expected common state at 16 sources).
+- `3` — total failure (no steps succeeded).
+- `1` — reserved for fatal init (DB unreachable before any step runs).
 
-### 8.4 Hard-fail vs soft-fail — layered, not a single switch
+A cron wrapper — and later Cloud Scheduler + Cloud Monitoring — acts on `2`/`3`
+without koshi needing any notification integration.
 
-- **Per-row/per-entry:** soft-fail — skip, log, continue.
-- **Per-source:** soft-fail at orchestration level — mark the step failed in
-  the run summary, move to the next source.
-- **Whole-run signaling:** the **exit code is the alerting mechanism** —
-  `0` clean, `2` partial failure (the *expected* common state at 16 sources),
-  `3` total failure, `1` reserved for fatal init (DB unreachable before any
-  step runs). A cron wrapper — and later Cloud Scheduler + Cloud Monitoring —
-  acts on `2`/`3` without koshi needing any notification integration.
+### 11.4 Idempotency Guarantee
 
-### 8.5 Retry policy — retry only what can succeed
-
-Retry **transient** failures only: transport errors and HTTP `(429, 500, 502,
-503, 504)`. Never retry a 404/400 or a parse error that will fail identically
-next time — the watermark already handles retry-on-next-run for those.
-
-### 8.6 Why two watermarks exist (the anti-freeze mechanism)
-
-`fetch_and_register` commits `content_hash`/`last_changed_at` **before** the
-caller parses. If parsing then fails, naively trusting the returned `changed`
-bool would mean: next run, the hash hasn't moved, `changed` is `False`, and the
-page is silently skipped forever. `last_extracted_at` only advances after a
-parse **and** persist both succeed, so `_needs_extraction()` returns `True` on
-every run until the parse finally succeeds. **Already built** — every new
-source inherits it free via `run_source_sync`.
-
-### 8.7 Dead-letter design — documented, not built
-
-On exhausted-retry parse failure, save raw page content to
-`GCS://koshi-dlq/<date>/<page>.html` + a `manifest.json` failure record
-(`url`, `error`, `retry_count`, `content_hash`), replayable via
-`python -m koshi replay --manifest ...` once a fix ships. Deferred alongside
-§9's production infra — nothing in `karki-labs-infra` exists to host it yet.
-
-### 8.8 Idempotency guarantee
-
-1. **Content hash** — unchanged page → `_needs_extraction` returns `False` → no-op.
-2. **Natural-key unique constraint** — re-parsed same data → DB rejects duplicates.
+1. **Content hash** — unchanged snapshot → `_needs_extraction` returns `False` → no-op.
+2. **Natural-key unique constraint** — re-extracted same data → DB rejects duplicates.
 3. **`staged_keys`** — in-batch dedup prevents `UniqueViolation` rollback.
 4. **`merge()`** for reference tables — upsert by primary key.
 
@@ -579,12 +1122,12 @@ retried without side effects.
 
 ---
 
-## 9. Scheduling & target deployment
+## 12. Scheduling & Target Deployment
 
-### 9.1 Cadence-group model (documented, not active now)
+### 12.1 Cadence-Group Model (Documented, Not Active)
 
 Running all 16 sources on one daily cron is wasteful — most change monthly or
-less. The target is cadence-grouped:
+less:
 
 | Cadence | Sources | Trigger (once deployed) |
 |---|---|---|
@@ -595,304 +1138,388 @@ less. The target is cadence-grouped:
 | Annual | Funnel granted, assessing bodies | 1 July (program year start) |
 | On-demand | Policy events | Manual trigger |
 
-`__main__.py` takes an optional `--group` argument once this matters. **Not
-built this pass** — `python -m koshi` runs everything, every time, manually,
-which is correct at 2–16 sources and zero deployment.
-
-### 9.2 Target GCP architecture (documented, not scheduled)
+### 12.2 Target GCP Architecture
 
 ```mermaid
 flowchart TB
     CS["Cloud Scheduler (cron)"] --> CRJ["Cloud Run Job (ETL)<br/>python -m koshi --group ..."]
     CRJ --> SQL[("Cloud SQL Postgres<br/>shared instance, own database")]
     CRJ --> DLQ[("GCS koshi-dlq<br/>dead-letter bucket")]
+    CRJ --> RAW[("GCS koshi-raw<br/>immutable snapshots")]
     LUKLA["lukla (Next.js)"] -->|"Cloud Run IAM invoker only"| CRS["Cloud Run Service (API)<br/>uvicorn koshi.main:app"]
     CRS --> SQL
 
     style CS fill:#888,color:#fff
     style DLQ fill:#888,color:#fff
+    style RAW fill:#cd7f32,color:#fff
 ```
 
-### 9.3 Resource specs & marginal cost
+### 12.3 Deployment Rules (Unchanged)
+
+- **Local-first** — nothing deploys until local setup is proven end to end.
+- **Cloud Run (never GKE)** — family standard.
+- **GitHub Actions + WIF (never Cloud Build)** — family standard.
+- **Terraform in `karki-labs-infra`** — only after local is proven.
+- **No end-user auth** — Cloud Run IAM invoker only; `lukla`'s service account is the sole granted identity.
+
+### 12.4 Resource Specs & Marginal Cost
 
 | Resource | Spec | Monthly cost (est.) |
 |---|---|---|
 | Cloud Run Job (ETL) | 1 vCPU, 2GB, timeout 30 min | ~$0 (runs minutes/month) |
 | Cloud Run Service (API) | 1 vCPU, 512MB, min-instances 0 | ~$0–5 |
-| Cloud SQL Postgres | shared with saathi/thamel/manaslu | ~$25–50 (shared) |
-| GCS DLQ bucket | standard, ~1GB | ~$0.02 |
+| Cloud SQL Postgres | Shared with saathi family | ~$25–50 (shared) |
+| GCS (raw + DLQ) | Standard, ~5GB | ~$0.10 |
 | Cloud Scheduler | 5–6 schedules | Free tier |
 | Claude API (reserved) | Haiku, ~10 calls/month | <$0.10 |
-
-**Total marginal cost of koshi: <$10/month.** Deploy mechanism matches the
-family: **Cloud Run (never GKE)**, **GitHub Actions + WIF (never Cloud Build)**,
-**Terraform in `karki-labs-infra`** — and only once local setup has proven the
-pipeline end to end. Local-first is still the deliberate current phase.
+| **koshi marginal total** | | **<$10/month** |
 
 ---
 
-## 10. Serving layer (target — out of scope this pass)
+## 13. Technology Alternatives — Every Stack Considered
 
-Explicitly a separate, later round. Documented here so the ETL's shape (tables,
-provenance, tiers) is designed to *feed* this — not built now.
+### 13.1 HTTP Fetch (Acquisition)
 
-### 10.1 Endpoint inventory (target)
-
-| Endpoint | Returns | Source tables |
+| Option | Verdict | Notes |
 |---|---|---|
-| `GET /v1/healthz` | liveness | — ✅ built |
-| `GET /v1/occupations` | list + momentum | occupations, occupation_momentum ✅ built |
-| `GET /v1/occupations/{code}` | full profile | occupations, ceiling_usage, eoi_rounds, occupation_momentum ✅ built |
-| `GET /v1/visas`, `/{code}` | subclass list/detail + processing times | visa_subclasses, processing_times |
-| `GET /v1/states`, `/{state}` | nomination summary/detail | state_nomination_status |
-| `GET /v1/national/summary` | program allocation, funnel | program_allocation, application_funnel |
-| `GET /v1/reference/*` | points test, English bands, assessing bodies | points_criteria_reference, english_test_bands, assessing_bodies |
+| **httpx** | ✅ Chosen | Modern, sync+async, already in repo |
+| requests | ❌ Dropped | httpx already present |
+| aiohttp | ❌ Dropped | Async adds complexity for 16 known pages |
+| Scrapy | ❌ Dropped | Built for thousands of unknown pages |
+| Playwright | ⚠️ Reserved | Only if a gov page becomes JS-rendered |
 
-### 10.2 The two fact shapes (already implemented)
+### 13.2 HTML Parsing (Extraction)
 
-`SourcedFact` (value + `reliability_tier` + `retrieved_at` + `source_url`) for
-scraped/curated facts; `DerivedFact` (value + `reliability_tier="derived"` +
-`computed_at`, no URL) for momentum. This is what lets the frontend render
-`official_curated` differently from `official_scraped` differently from
-`derived`.
-
-### 10.3 Presentation rules (the "apply logic" layer)
-
-1. Only state published facts — never "you should/can/are eligible." Phrase-ban tests enforce this.
-2. Never fabricate a trend — <3 rounds → omit the trend sentence, don't say "steady."
-3. Compare at query time, don't store comparisons.
-4. Momentum is the only *stored* derived fact.
-5. `NULL` is honest — render "not published," not a fake number.
-
-### 10.4 Caching
-
-| Layer | TTL | Rationale |
+| Option | Verdict | Notes |
 |---|---|---|
-| API response cache | 5–10 min | Data changes monthly; cache serves >99% of reads |
-| CDN/edge (static reference) | 24h | Points test / English bands change at most annually |
-| No app-level Redis | — | Postgres is fast enough at <1M rows; don't over-engineer |
+| **BeautifulSoup4 + lxml** | ✅ Chosen | Fast, forgiving, already in repo |
+| lxml.etree (raw) | ❌ Dropped | XPath-only, less ergonomic for messy gov HTML |
+| parsel | ⚠️ Equivalent | Not worth a new dependency |
+| selectolax | ⚠️ Fast | BS4+lxml is sufficient and already standard |
+
+### 13.3 Managed Extraction Providers
+
+| Option | Verdict | Notes |
+|---|---|---|
+| **Custom (httpx + BS4)** | ✅ Primary | $0, fastest, used for deterministic HTML |
+| **Firecrawl** | ✅ Fallback #1 | LLM-powered schema extraction, ~$0.05/record |
+| **Apify** | ✅ Fallback #2 | Actor-based, ~$0.05–0.50/1K pages |
+| **Zyte** | ✅ Fallback #3 | Anti-bot/JS-rendered, variable cost |
+
+### 13.4 PDF Extraction (Tier 3 — Pre-Researched)
+
+| Option | Cost | Verdict |
+|---|---|---|
+| **pdfplumber** | Free | ✅ First choice |
+| **marker-pdf** | Free (local) | ✅ Fallback #2 |
+| LlamaParse | ~$0.003/page | ⚠️ Only if marker fails |
+| Claude vision | ~$0.01/page | ⚠️ Last resort |
+| pypdf | Free | ❌ Text-only, loses tables |
+
+### 13.5 LLM Extraction (Tier 4 — Pre-Researched)
+
+| Model | In/1K | Out/1K | Verdict |
+|---|---|---|---|
+| **Claude Haiku 4** | $0.001 | $0.005 | ✅ Chosen if built |
+| Claude Sonnet 4 | $0.003 | $0.015 | ⚠️ Complex reasoning only |
+| GPT-4o-mini | $0.00015 | $0.0006 | ⚠️ Weaker structured output |
+
+### 13.6 Orchestration / Scheduling
+
+| Option | Verdict | Notes |
+|---|---|---|
+| **Manual `python -m koshi`** | ✅ Today | Simplest |
+| **Cloud Run Jobs + Cloud Scheduler** | ✅ Target | Serverless, per-cadence |
+| Airflow / Prefect / Dagster | ❌ Dropped | Operational overhead for 16 independent sources |
+| Temporal / Celery | ❌ Dropped | Overkill for batch cadence |
+
+### 13.7 Storage
+
+| Option | Verdict | Notes |
+|---|---|---|
+| **Postgres (Cloud SQL)** | ✅ Chosen | Relational, FK constraints, family standard |
+| **GCS (raw snapshots)** | ✅ Chosen | Immutable Bronze storage |
+| BigQuery | ❌ Dropped | <1M rows; Cloud SQL is simpler |
+| MongoDB | ❌ Dropped | Data is relational |
+| DuckDB | ⚠️ Not needed | API is the consumer, not ad-hoc analytics |
+
+### 13.8 Serving / API
+
+| Option | Verdict | Notes |
+|---|---|---|
+| **FastAPI** | ✅ Chosen | Async, Pydantic validation, already in repo |
+| Flask | ❌ Dropped | No native async/Pydantic |
+| Django + DRF | ❌ Dropped | Too heavy for read-only API |
+
+### 13.9 Deployment
+
+| Option | Verdict | Notes |
+|---|---|---|
+| **Cloud Run** | ✅ Chosen | Family standard |
+| GKE | ❌ Dropped | Explicitly forbidden per family rules |
+| Cloud Build | ❌ Dropped | Explicitly forbidden per family rules |
+| **GitHub Actions + WIF** | ✅ Chosen | Family CI/CD standard |
+| **Terraform (karki-labs-infra)** | ✅ Target | Only after local is proven |
+
+### 13.10 Fault Tolerance
+
+| Option | Verdict | Notes |
+|---|---|---|
+| **tenacity** | ✅ Chosen | Ported pattern from `research/au-visa-sources` |
+| **stdlib `logging`** | ✅ Chosen | Dual stdout + rotating file + JSON run summary |
+| stamina / backoff | ⚠️ Equivalent | tenacity already the family pattern |
 
 ---
 
-## 11. Implementation roadmap
+## 14. Implementation Roadmap (Updated)
 
-Confirmed: **curation-effort order** over presentation-priority order.
+### Current State (Built Today)
 
-- **Phase 0 — Fault-tolerance retrofit** on the 2 existing sources. Everything
-  in §8's foundational list + new tests (malformed-row fixtures, bad-YAML,
-  retry via `httpx.MockTransport`). Cheapest, highest-leverage — every source
-  added afterward inherits it free.
-- **Phase 1 — Source-registry refactor** (§7.3).
-- **Phase 2 — New sources, in order:** `visa_subclasses` (tier 5, unblocks the
-  FK) → visa fees (tier 2) → processing times (tier 2, proves the registry
-  end-to-end) → points test → English bands → assessing bodies + join (first
-  new domain) → policy events (second new domain) → eligibility requirements →
-  skills priority → MLTSSL/STSOL/ROL + state list changes → **state nomination
-  (deliberately last — highest per-row curation effort)** → program_allocation
-  + application_funnel (granted ships `NULL` or curated).
-- **Deferred:** `points_distribution` (no source); tiers 3/4 (only if step
-  10/12's curation cadence proves unsustainable); serving layer (§10);
-  deployment (§9).
+- 2 sources extracted (ANZSCO, SkillSelect rounds).
+- 5 tables populated (occupations, eoi_rounds, ceiling_usage, occupation_momentum, source_pages).
+- Manual curation seed pattern (ceiling_usage YAML).
+- Two-watermark anti-freeze mechanism.
+- Provenance gate (`require_provenance`).
+- Serving API (`GET /v1/occupations`, `GET /v1/occupations/{code}`).
+- Zero fault tolerance (no retry, no logging, no per-row isolation).
+- Zero deployment infra.
 
----
+### Phase 0: Provider Bake-Off + Fault-Tolerance Retrofit (Week 1)
 
-## 12. Technology alternatives — every stack considered, why each was kept or dropped
+**Provider bake-off**: Test Firecrawl, Apify, and custom extraction on 10
+URLs. Measure accuracy, cost, latency, failure rate, schema consistency.
+Choose primary and fallback providers based on empirical results (§9.2).
 
-This is the full decision record. For each category: what the options were,
-what won, what was rejected and why, and **where the tool sits in the
-pipeline**.
+**Fault-tolerance retrofit**: Everything in §11's foundational list:
+- `logging_config.py`, `resilience.py`, `run_summary.py` — new modules.
+- `crawler/fetch.py` — split timeout, tenacity retry, `FetchError`.
+- Both parsers — per-row isolation, `ParseResult(rows, skipped)`.
+- `seeds/loader.py` — per-entry isolation.
+- `__main__.py` — per-step isolation + exit codes.
+- New tests: malformed-row fixtures, bad-YAML, retry via `httpx.MockTransport`.
 
-### 12.1 HTTP fetch (Extract)
+Cheapest, highest-leverage — every source added afterward inherits it free.
 
-| Option | Why considered | Verdict | How it fits the pipeline |
-|---|---|---|---|
-| **httpx** | Modern, sync+async, already in repo | ✅ **Chosen** | `crawler/fetch.py` — the Extract stage |
-| requests | Ubiquitous, simple | ❌ Dropped — httpx already present, adds nothing | — |
-| aiohttp | Async speed | ❌ Dropped — 16 known pages at monthly cadence; async adds complexity for zero throughput gain | — |
-| **Scrapy** | Full crawler: spiders, item pipelines, auto-throttle | ❌ Dropped — built for thousands of *unknown* pages; koshi has ~16 *known* URLs | — |
-| Playwright / Puppeteer | Handles JS-rendered pages | ⚠️ Reserved — only if a gov page becomes JS-rendered; 10–20× slower, memory-heavy | — |
-| Selenium | Browser automation | ❌ Dropped — same as Playwright but heavier | — |
+### Phase 1: Control Plane + Raw Snapshots (Week 2–3)
 
-### 12.2 HTML parsing (Transform)
+**Goal**: Build the control plane infrastructure and immutable snapshot storage.
 
-| Option | Why considered | Verdict | How it fits the pipeline |
-|---|---|---|---|
-| **BeautifulSoup4 + lxml** | Fast, forgiving, already in repo | ✅ **Chosen** | `extraction/*.py` — the Transform stage |
-| lxml.etree (raw) | Fastest | ❌ Dropped — XPath-only, less ergonomic for messy gov HTML | — |
-| parsel | Scrapy's selector, clean API | ⚠️ Equivalent; not worth a new dependency when BS4+lxml is proven | — |
-| selectolax | C-speed, tiny | ⚠️ Fast, but BS4+lxml is sufficient and already standard | — |
-| Playwright DOM | Handles JS | ❌ Dropped — same as 12.1 | — |
+**Tasks**:
+- Create GCS bucket `koshi-raw/`.
+- Implement `acquire_and_store_snapshot()` — capture request/response/headers/manifest.
+- Persist snapshot metadata in Postgres `snapshots` table.
+- Add replay from local snapshot (no network call required for re-extraction).
+- Add conditional requests (ETag/Last-Modified to skip unchanged content).
+- Build control plane tables: `sources`, `resources`, `contracts`, `schedules`, `extraction_strategies`, `quality_policies`.
+- Source-registry refactor (`src/koshi/source_registry.py`) — generalize the orchestration skeleton.
 
-### 12.3 Discovery / crawling (Extract, tier 1)
+**Deliverable**: Can acquire any source and store raw response immutably with
+full replay capability.
 
-| Option | Why considered | Verdict | How it fits the pipeline |
-|---|---|---|---|
-| Autonomous link-following crawler | Could auto-discover new pages | ❌ Dropped for this pass — materially heavier; koshi's catalog is specific known URLs | `source_pages` is the registry, not a frontier |
-| **Explicit `SourceSpec` registry** | Every source is a declared, known URL | ✅ **Chosen** | §7.3 `source_registry.py` |
-| `research/au-visa-sources` crawler | Already built, had discovery | ⚠️ Rebuilt-into-koshi; not a runtime dep anymore | its politeness/retry patterns were *ported*, not the code |
+### Phase 2: Three Vertical Slices (Week 4–5)
 
-### 12.4 PDF extraction (Transform, tier 3 — pre-researched)
+**Goal**: Build 3 representative end-to-end slices demonstrating the full
+medallion pipeline, rather than all 18 contracts upfront.
 
-| Option | Cost | Quality | Verdict | How it fits |
-|---|---|---|---|---|
-| **pdfplumber** | Free | Good tables | ✅ First choice (project's stated default) | Tier-3 transform |
-| **marker-pdf** | Free (local) | Good clean PDFs | ✅ Fallback #2 | Tier-3 transform |
-| LlamaParse | ~$0.003/page | Excellent tables | ⚠️ Only if marker fails | Tier-3 transform |
-| Claude vision | ~$0.01/page | Excellent, complex layouts | ⚠️ Last resort | Tier-3 transform |
-| pypdf | Free | Text-only, loses tables | ❌ Dropped — not for tabular data | — |
-| Camelot | Free | Good bordered tables | ⚠️ Niche layouts only | — |
+**Slice A — Easy (HTML table)**:
+- Source: ANZSCO occupations (already built — adapt to medallion pipeline).
+- Acquisition: `httpx`.
+- Extraction: `lxml`/BeautifulSoup.
+- Contract: `OccupationRecord`.
+- Quality: Schema validation, row-count checks.
+- Storage: Postgres → Gold release.
 
-### 12.5 LLM extraction (Transform, tier 4 — pre-researched)
+**Slice B — Difficult (JS/PDF or complex HTML)**:
+- Source: Processing times (if JS-rendered) or a PDF report.
+- Acquisition: Playwright or PDF download.
+- Extraction: Firecrawl or `pdfplumber` + quality-aware fallback.
+- Contract: `ProcessingTimeRecord`.
+- Quality: Schema validation, provider comparison, row-count drift.
+- Storage: Postgres → Gold release.
 
-| Model | In / 1K | Out / 1K | Verdict | How it fits |
-|---|---|---|---|---|
-| **Claude Haiku 4** | $0.001 | $0.005 | ✅ **Chosen if ever built** — prose extraction is a Haiku-class task | Tier-4 transform |
-| Claude Sonnet 4 | $0.003 | $0.015 | ⚠️ PDF vision / complex reasoning only | Tier-4 fallback |
-| Claude Opus 4 | $0.015 | $0.075 | ❌ Never justified for extraction | — |
-| GPT-4o-mini | $0.00015 | $0.0006 | ⚠️ Cheapest, weaker structured output | — |
-| GPT-4o | $0.0025 | $0.010 | ⚠️ Comparable to Sonnet, no vision advantage | — |
+**Slice C — Semantic (LLM extraction)**:
+- Source: Unstructured policy page.
+- Acquisition: `httpx`.
+- Extraction: LLM with Pydantic schema.
+- Contract: `PolicyEventRecord`.
+- Quality: Semantic drift detection, human-review flag.
+- Storage: Postgres → Gold release.
 
-Use **structured-output JSON-schema mode** (eliminates hallucinated fields) and
-`max_retries=1`, not the SDK default of 2 (bato's lesson — the caller's timeout
-budget is tighter than the SDK assumes).
+**Deliverable**: Three complete vertical slices demonstrating the full
+Bronze → Silver → Gold pipeline with quality gates.
 
-### 12.6 Orchestration / scheduling (Extract→Load trigger)
+### Phase 3: Quality Engine + Publication (Week 6–7)
 
-| Option | Why considered | Verdict | How it fits |
-|---|---|---|---|
-| **Manual `python -m koshi`** | Simplest | ✅ **Chosen today** | Whole pipeline trigger |
-| **Cloud Run Jobs + Cloud Scheduler** | Serverless, per-cadence | ✅ **Chosen target** | Per-group trigger (§9) |
-| Airflow / Prefect / Dagster | Rich DAGs, retries, UI | ❌ Dropped — operational overhead for 16 independent sources | — |
-| Temporal | Durable workflows | ❌ Dropped — overkill for batch cadence | — |
-| Celery + cron | Python-native queues | ❌ Dropped — requires an always-on worker | — |
-| system cron | Zero infra | ⚠️ Works locally, but no retry/alerting | — |
+**Goal**: Build severity-based quality gates, quarantine, and versioned releases.
 
-Cloud Run Jobs earn their complexity only when you have hundreds of
-interdependent DAGs; koshi has 16 *independent* sources.
+**Tasks**:
+- Implement severity-based quality checks (INFO/WARNING/ERROR/BLOCKER).
+- Add dataset-specific quality policies (per-contract expected ranges, required fields, uniqueness).
+- Implement semantic drift detection (LLM comparing snapshot text across versions).
+- Build `quarantine` table/storage for rejected records.
+- Implement publication gate (PASS/WARNING → publish; ERROR/BLOCKER → quarantine).
+- Add `pipeline_runs` table for full lineage tracking.
+- Add `dataset_releases` table with `is_current` flag.
+- Implement release publication and rollback via `is_current` toggle.
 
-### 12.7 Storage (Load)
+**Deliverable**: Can validate extracted data against quality policies, block
+bad records to quarantine, publish versioned releases, and roll back to any
+prior known-good release.
 
-| Option | Why considered | Verdict | How it fits |
-|---|---|---|---|
-| **Postgres (Cloud SQL)** | Relational, FK constraints, already the family standard | ✅ **Chosen** | Fact tables + `source_pages` |
-| BigQuery | Analytics-scale | ❌ Dropped — <1M rows; Cloud SQL is simpler and shared | — |
-| MongoDB | Flexible docs | ❌ Dropped — data is relational (occupations → rounds → momentum) | — |
-| SQLite | Zero-infra | ❌ Dropped for prod — Postgres gives constraints + shared instance; tests already run on real Postgres | — |
-| DuckDB | Fast local analytics | ⚠️ Not needed; the serving API is the consumer, not ad-hoc analytics | — |
-| GCS (raw) | Cheap object store | ⚠️ Reserved — only for the DLQ (§8.7) | Dead-letter |
+### Phase 4: API + Deployment (Week 8)
 
-### 12.8 Transform layer (Transform, after extraction)
+**Goal**: Build FastAPI serving layer and deploy to Cloud Run.
 
-| Option | Why considered | Verdict | How it fits |
-|---|---|---|---|
-| **Custom Python** | Full control over HTML/PDF parsing | ✅ **Chosen** | `extraction/*.py` |
-| dbt | SQL transforms on loaded data | ❌ Dropped — koshi's hard part is *extraction*, not SQL; could be added later for analytics | — |
-| Spark | Distributed transforms | ❌ Dropped — <1M rows, no cluster | — |
+**Tasks**:
+- Implement FastAPI endpoints with pagination and release metadata in responses.
+- Separate ETL Job container from API Service container.
+- Add Cloud Scheduler for per-cadence cron triggers.
+- Add Cloud Monitoring alerts on exit codes 2/3.
+- Wire GitHub Actions + WIF for CI/CD.
 
-### 12.9 Migrations / schema (Load)
+**Deliverable**: Production-ready API serving versioned Gold releases with
+scheduled ingestion.
 
-| Option | Verdict | How it fits |
-|---|---|---|
-| **Alembic** | ✅ **Chosen** — versioned, autogenerate, already in repo | Schema lifecycle |
-| Raw SQL files | ❌ Dropped — no downgrade/upgrade tracking | — |
-| Prisma | ❌ Dropped — Node-first, doesn't fit a Python SQLAlchemy stack | — |
+### Phase 5: Add Remaining Sources (Week 9–11)
 
-### 12.10 Serving / API (Serve)
+**Goal**: Add remaining 13 sources as control-plane configuration + contracts.
 
-| Option | Verdict | How it fits |
-|---|---|---|
-| **FastAPI** | ✅ **Chosen** — async, Pydantic validation, already in repo | `koshi.main:app` |
-| Flask | ❌ Dropped — no native async/Pydantic | — |
-| Django + DRF | ❌ Dropped — batteries too heavy for a read-only API | — |
-| Litestar | ⚠️ Solid, but FastAPI is already standard here | — |
+**Tasks**:
+- Define contracts for remaining tables (see §7).
+- Configure extraction strategies per source.
+- Add dataset-specific quality policies for each contract.
+- Test end-to-end for each source.
 
-### 12.11 Caching (Serve)
+**Deliverable**: Full 16-source catalog operational with quality-gated,
+versioned releases.
 
-| Option | Verdict | How it fits |
-|---|---|---|
-| In-process / fastapi-cache2 | ✅ Target — 5–10 min TTL | API read layer |
-| CDN edge cache | ✅ Target — 24h for static reference endpoints | Serve |
-| Redis | ❌ Dropped — unnecessary at <1M rows | — |
+### Source Build Order (Phases 2 + 5 combined)
 
-### 12.12 Fault tolerance (cross-cutting)
+Curation-effort order over presentation-priority order:
 
-| Option | Verdict | How it fits |
-|---|---|---|
-| **tenacity** | ✅ **Chosen** — ported pattern from `research/au-visa-sources` | Retry/backoff in Extract |
-| stamina | ⚠️ Equivalent; tenacity is already the family pattern | — |
-| backoff | ⚠️ Equivalent; fewer features | — |
-| manual `time.sleep` loop | ❌ Dropped — reinventing the wheel | — |
-| stdlib `logging` | ✅ **Chosen** — dual stdout + rotating file + JSON run summary | Observability across all stages |
+1. `visa_subclasses` (tier 5, unblocks FK)
+2. Visa fees (tier 2)
+3. Processing times (tier 2, proves registry end-to-end)
+4. Points test (tier 2)
+5. English bands (tier 2)
+6. Assessing bodies + join (tier 5, first new domain)
+7. Policy events (tier 5, second new domain)
+8. Eligibility requirements (tier 5)
+9. Skills priority (tier 2)
+10. MLTSSL/STSOL/ROL + state list changes (tier 2 / tier 1→5)
+11. **State nomination (deliberately last — highest per-row curation effort)**
+12. Program allocation + application funnel
 
-### 12.13 Deployment (whole-pipeline runtime)
-
-| Option | Why considered | Verdict | How it fits |
-|---|---|---|---|
-| **Cloud Run** | Serverless, family standard | ✅ **Chosen** | ETL Job + API Service |
-| GKE | Full control | ❌ Dropped — heavy, family rule is explicit | — |
-| Cloud Functions | Simple functions | ❌ Dropped — jobs need long timeouts + job semantics | — |
-| Compute Engine | Raw VMs | ❌ Dropped — unnecessary ops | — |
-| **GitHub Actions + WIF** | Family CI/CD standard | ✅ **Chosen** | Deploy pipeline |
-| Cloud Build | GCP-native CI | ❌ Dropped — family rule is explicit | — |
-| **Terraform (karki-labs-infra)** | IaC | ✅ Target — only after local is proven | Provisioning |
+**Deferred**: `points_distribution` (no confirmed source); tiers 3/4 (only if
+tier-5 curation cadence proves unsustainable); serving-layer expansion (§10
+endpoint inventory).
 
 ---
 
-## 13. Open design questions
+## 15. What Changed vs. the Prior Doc
 
-Carried forward from the 2026-08-15 spec's own open items, **plus** unresolved
-tensions surfaced during review. Resolve before implementing the affected slice.
+This section summarizes the delta that `feedback.md` introduces into the prior
+canonical architecture doc (`2026-08-16-koshi-etl-architecture.md`, the
+version this file overwrites).
 
-1. **`list_change_log`** — legislation.gov.au's real HTML structure must be
-   confirmed before committing to pure tier-2.
-2. **`skills_priority_ratings`** — JSA's exact rating vocabulary must be
-   confirmed against the live page.
-3. **`application_funnel` dual provenance** — a genuine schema extension beyond
-   the single-triple convention; second nullable triple scoped to
-   `granted_count`.
-4. **Parser return-type change** — `ParseResult(rows, skipped)` touches two
-   already-reviewed test files.
-5. **Provenance on `visa_subclasses.base_application_cost`** (review finding) —
-   a tier-2-scraped fee written onto a `official_curated` row erases the fee's
-   true source. Consider a `visa_fees` time-series table (also preserves annual
-   indexation history) or a second provenance triple scoped to the cost field.
-6. **404/410 handling** (review finding) — the failure-mode table says "mark
-   `status='dead'`, skip" but `SourcePage.status` has no enum and the Phase-0
-   plan raises `FetchError` instead. Pick one and reconcile.
-7. **Multi-table `SourceSpec`** (review finding) — `tables` is a tuple but
-   `run_source_sync` takes one parser/persist; the SkillSelect→funnel piggyback
-   can't be expressed by the generalized contract.
-8. **Migration numbering vs landing order** (review finding) — §6's numbers are
-   a catalog index; §11 lands them in a different order. Re-sequence at landing
-   time or relabel.
-9. **Snapshot vs overwrite** (review finding) — most reference tables don't say
-   whether a change overwrites (losing prior value + `retrieved_at`) or appends.
-   Decide point-in-time vs current-state per table.
-10. **Two-pass `visa_subclasses` seed** — the generalized `load_seed_rows`
-    needs a deferred-FK hook the single-pass signature doesn't have.
+### Structural Changes
 
----
+| Change | Prior Doc | This Doc |
+|---|---|---|
+| **Pipeline framing** | 8-stage ETL flow (Extract → Hash → Decide → Transform → Validate → Load → Derive → Advance) | Medallion pipeline: Bronze (acquisition) → Silver (contracts + extraction) → Gold (normalization + releases) |
+| **Acquisition model** | Single `fetch_and_register()` — acquisition and extraction tightly coupled | **Acquisition separated from extraction** — immutable raw snapshots (request/response/headers/manifest) stored before any processing |
+| **Source hierarchy** | Flat `SourceSpec` with one URL per source | **Source → Resource → Snapshot model** — one source may have multiple resources; each resource has independent snapshot history |
+| **Control plane** | Implicit in `source_registry.py` and `SourceSpec` dataclass | **Explicit control plane** with dedicated tables: `sources`, `resources`, `snapshots`, `extraction_strategies`, `contracts`, `quality_policies`, `schedules` |
+| **Execution lineage** | Implicit via watermarks | **Generic execution model** — `pipeline_runs` table with parent/child runs for full lineage from acquisition through publication |
 
-## 14. Success criteria
+### New Components
 
-Faithful to this doc if: every new table carries the provenance trio (or is
-explicitly `derived`); no source needs a crawl domain outside
-`sources/domains.yaml`; a malformed row in any parser or seed file is skipped
-and logged, never crashing the run; `__main__.py`'s steps run independently;
-every network call goes through retry/backoff with a split timeout; the run
-summary and exit code correctly reflect partial vs total vs clean success; no
-PDF or Claude-fallback code exists yet; no deployment/Terraform work happened
-as a side effect; and — unchanged from the existing design — no row ships
-without a source, no generated string states or implies a personalized
-outcome, and koshi has zero end-user-identity code anywhere.
+| Component | Description |
+|---|---|
+| **Quality engine** | Severity-based quality checks (INFO/WARNING/ERROR/BLOCKER) with dataset-specific policies, publication gate, and quarantine path |
+| **Semantic drift detection** | LLM compares source text across snapshots to detect meaning changes, not just byte-level diffs |
+| **Quality-aware provider fallback** | Custom (httpx+BS4) first; Firecrawl/Apify/Zyte only when deterministic extraction fails quality gates |
+| **Versioned releases + rollback** | Every publication is a named `dataset_release`; rollback reverts `is_current` to any prior known-good release |
+| **Provider bake-off** | Phase 0: empirical comparison of custom, Firecrawl, Apify on 10 URLs before committing to provider spend |
+
+### Roadmap Changes
+
+| Prior Doc | This Doc |
+|---|---|
+| Fault-tolerance → source registry → 12 sources in curation-effort order | **Provider bake-off** → **control plane + raw snapshots** → **three vertical slices** (easy HTML, difficult JS/PDF, semantic LLM) → **quality engine + publication** → **API + deployment** → **remaining 13 sources** |
+
+### Preserved Unchanged
+
+- All 16 source catalog entries and tier assignments.
+- All 18 domain tables and their migration mappings.
+- Regulatory posture, provenance trio, two-watermark design.
+- Local-first deployment rules (Cloud Run, never GKE; GitHub Actions + WIF, never Cloud Build).
+- Technology alternatives analysis (expanded with managed provider comparisons).
+- Fault-tolerance retrofit design (tenacity, per-row isolation, exit codes).
+- Architecture principles (unchanged — every decision still holds them).
+- Mermaid diagrams (context, ERD, tier decision tree, GCP target) — adapted and extended, not removed.
+- Sibling doc references: `docs/superpowers/research/2026-08-16-koshi-source-urls.md` and `docs/superpowers/research/2026-08-16-koshi-data-model.md`.
 
 ---
 
-## Document history
+## 16. Open Design Questions
+
+Carried forward from the prior doc, plus new ones surfaced by the re-architecture.
+
+1. **`list_change_log`** — legislation.gov.au's real HTML structure must be confirmed before committing to pure tier-2.
+2. **`skills_priority_ratings`** — JSA's exact rating vocabulary must be confirmed against the live page.
+3. **`application_funnel` dual provenance** — second nullable provenance triple scoped to `granted_count`; a genuine schema extension beyond the single-triple convention.
+4. **Parser return-type change** — `ParseResult(rows, skipped)` touches two already-reviewed test files.
+5. **Provenance on `visa_subclasses.base_application_cost`** — a tier-2-scraped fee written onto an `official_curated` row erases the fee's true source. Consider a `visa_fees` time-series table or a second provenance triple scoped to the cost field.
+6. **404/410 handling** — reconcile the failure-mode table's "mark `status='dead'`, skip" vs. Phase-0 `FetchError` approach.
+7. **Multi-table `SourceSpec`** — `tables` is a tuple but `run_source_sync` takes one parser/persist; the SkillSelect→funnel piggyback can't be expressed by the generalized contract.
+8. **Migration numbering vs. landing order** — §7's numbers are a catalog index; §14 lands them in a different order.
+9. **Snapshot vs. overwrite** — most reference tables don't say whether a change overwrites (losing prior value + `retrieved_at`) or appends. Decide point-in-time vs. current-state per table.
+10. **Two-pass `visa_subclasses` seed** — the generalized `load_seed_rows` needs a deferred-FK hook the single-pass signature doesn't have.
+11. **GCS snapshot cost** — immutable append-only Bronze storage accumulates over time. Define a retention policy (e.g., keep last N snapshots per resource, or time-based TTL).
+12. **Provider bake-off ground truth** — who validates accuracy? Need a human-verified golden dataset for the 10 test URLs before the bake-off starts.
+13. **Quarantine replay** — when a fix ships for a quarantined record, how does it re-enter the pipeline? Dedicated `replay --quarantine` command or re-extraction from the original snapshot?
+
+---
+
+## 17. Success Criteria
+
+Faithful to this doc if:
+
+- Every acquisition produces an immutable Bronze snapshot with manifest,
+  content hash, and full request/response/headers before any extraction.
+- Every extraction validates against a versioned Pydantic contract before
+  reaching storage.
+- The quality engine gates every record: PASS → publish, WARNING → publish
+  + alert, ERROR/BLOCKER → quarantine + alert.
+- Every publication is a named, versioned `dataset_release` with rollback
+  capability.
+- `pipeline_runs` tracks every stage with parent/child lineage.
+- Provider selection follows the deterministic-first, quality-aware fallback
+  ladder; managed providers are only invoked when custom extraction fails
+  quality gates.
+- Semantic drift detection runs on every extraction, comparing against the
+  previous snapshot.
+- Every fact row carries the provenance trio (or is explicitly `derived`).
+- A malformed row in any parser or seed file is skipped and logged, never
+  crashing the run.
+- `__main__.py`'s steps run independently; exit codes `0`/`2`/`3`/`1` signal
+  clean/partial/total/fatal.
+- No PDF or Claude-fallback code exists yet (tiers 3/4 pre-researched only).
+- No deployment/Terraform work happened before local setup is proven end to end.
+- No row ships without a source; no generated string states or implies a
+  personalized outcome; zero end-user-identity code anywhere.
+- The architecture document references sibling docs for exhaustive URL catalog
+  and schema details rather than duplicating them inline.
+
+---
+
+## Document History
 
 | Date | Change |
 |---|---|
 | 2026-08-14 | Original design spec (why koshi exists + full intended model). |
 | 2026-08-15 | Independent ETL architecture draft (survey + ERD + serving + deployment). |
 | 2026-08-15 | Code-grounded ETL finalization spec (fault-tolerance audit, tier reconciliation). |
-| 2026-08-16 | **This doc** — canonical merge of the two, mermaid diagrams, full technology-alternatives record. |
+| 2026-08-16 | Canonical merge — mermaid diagrams, full technology-alternatives record. |
+| 2026-08-16 | **Rebuilt** — incorporated `feedback.md` re-architecture: medallion pipeline, control/data plane separation, acquisition/extraction split, quality engine, provider strategy, versioned releases, Phase-0 bake-off. |
