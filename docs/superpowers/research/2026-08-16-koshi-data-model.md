@@ -32,6 +32,19 @@
 >
 > Each affected table carries an **`⚠ Audit`** block. Findings are referenced as
 > I*n* (integrity), F*n* (forced change) and G*n* (gap) per the agent files.
+>
+> ### 2026-08-18 (later) — reconciled with the implementation
+>
+> Steps 3–7 built part of this model, and this document has been brought back
+> into line with the code. Sections marked **✅ Built** describe what exists;
+> everything else is still specification.
+>
+> Where the implementation deliberately departs from what this doc specified,
+> the departure is recorded **at the table**, with its reason. The most
+> important is C22: an earlier revision specified a foreign key that must not
+> exist, and building it would abort every crosswalk load. Undocumented
+> deviations read as bugs to the next person, so they are written down where
+> someone will actually hit them.
 
 ---
 
@@ -715,16 +728,22 @@ These 18 tables are the Silver/Gold normalized output — the actual sourced fac
 
 ### C1. occupations
 
-**Purpose:** ANZSCO occupation master list — the canonical occupation dimension fed by the ABS ANZSCO search page via deterministic HTML scraping.
+**Purpose:** ANZSCO occupation master list — the canonical occupation dimension. Fed by **ABS Table 5** (the classification proper, 1,076 six-digit occupations), **JSA** (which adds 4-digit unit groups), and **LIN 19/051** (which adds ANZSCO-2013-only codes the 2022 edition dropped).
 
 | Column | PostgreSQL Type | Nullable / Default | Constraints |
 |---|---|---|---|
 | `code` | `TEXT` | NOT NULL | **PK** — ANZSCO occupation code (e.g. `261312`) |
 | `name` | `TEXT` | NOT NULL | — |
 | `unit_group` | `TEXT` | NOT NULL | ANZSCO unit group code (e.g. `2613`) |
+| `code_grain` | `TEXT` | NOT NULL, `'occupation'` | `CHECK IN ('unit_group','occupation')` — migration `0008` |
+| `anzsco_edition` | `TEXT` | NOT NULL, `'2022'` | Which edition this code belongs to — migration `0010` |
 | `source_url` | `TEXT` | NOT NULL | Provenance trio |
 | `retrieved_at` | `TIMESTAMPTZ` | NOT NULL | Provenance trio |
 | `reliability_tier` | `TEXT` | NOT NULL, `'official_scraped'` | Provenance trio |
+
+**Live volume (2026-08-18):** 1,485 rows — 1,480 ANZSCO 2022 plus 5 carried
+only by LIN 19/051 under 2013 (e.g. `394111 Cabinetmaker`, which live
+invitation rounds invite and the 2022 classification does not contain).
 
 **Relationships:**
 - `occupations.code` ← `eoi_rounds.occupation_code` (FK, nullable)
@@ -782,16 +801,27 @@ These 18 tables are the Silver/Gold normalized output — the actual sourced fac
 | Column | PostgreSQL Type | Nullable / Default | Constraints |
 |---|---|---|---|
 | `id` | `INTEGER` | NOT NULL | **PK**, `auto_increment` |
-| `visa_code` | `TEXT` | NOT NULL | e.g. `189`, `491` |
-| `occupation_code` | `TEXT` | NULL | **FK** → `occupations.code` (nullable — rounds may have non-ANZSCO codes) |
+| `visa_code` | `TEXT` | NOT NULL | e.g. `189`, `491` — read from the page, not passed in |
+| `occupation_name_raw` | `TEXT` | NOT NULL | What the source published, verbatim — migration `0007` |
+| `occupation_code` | `TEXT` | NULL | **FK** → `occupations.code`. *Derived* via the C22 crosswalk, never published by the source |
 | `round_date` | `DATE` | NOT NULL | — |
 | `threshold_points` | `INTEGER` | NOT NULL | Minimum points invited |
-| `invitations_issued` | `INTEGER` | NULL | May be blank in source |
+| `invitations_issued` | `INTEGER` | NULL | **NO SOURCE at this grain** — see audit block |
 | `source_url` | `TEXT` | NOT NULL | Provenance trio |
 | `retrieved_at` | `TIMESTAMPTZ` | NOT NULL | Provenance trio |
 | `reliability_tier` | `TEXT` | NOT NULL, `'official_scraped'` | Provenance trio |
 
-**Unique constraint:** `(visa_code, occupation_code, round_date)` — prevents duplicate re-insertion on whole-page hash changes.
+**Unique constraint:** `(visa_code, occupation_name_raw, round_date)` — migration `0007`.
+
+⚠ **Keyed on the name, not the code.** `occupation_code` is NULL for any row
+the crosswalk cannot resolve, and Postgres treats NULLs as distinct, so a
+code-keyed constraint silently stops deduplicating exactly the rows most at
+risk of duplication. The name is the stable natural key regardless of
+resolution outcome.
+
+**Live volume (2026-08-18):** 786 rows over 5 round dates — 140 from the
+current-round page, 646 backfilled from the previous-rounds archive.
+**0 unresolved.**
 
 **Relationships:**
 - `eoi_rounds.occupation_code` → `occupations.code`
@@ -1004,6 +1034,19 @@ These 18 tables are the Silver/Gold normalized output — the actual sourced fac
 >
 > Caveat: BP0068's 62 subclasses are only those **with grants**, so it is a
 > lower bound on a complete registry, not a registry.
+
+### ✅ Built 2026-08-18 — migration `0011`, 62 rows
+
+Populated from BP0068 rather than the 6-row tier-5 seed this section
+originally described. Built columns are `code` (PK), `name`, `visa_category`
+and the provenance trio.
+
+**Not yet built** from the plan above: `permanence`, `family`, `age_limit`,
+`work_rights_description`, `points_test_required` and the other static facts.
+`permanence` in particular has **NO SOURCE** (G5) — it is not published as
+structured data anywhere the audit found. The 5-level Program → Category →
+Type → Sub-type → Subclass taxonomy is available in BP0068 and only
+`visa_category` is currently taken from it.
 
 **Status:** Target (migration `0007`).
 
@@ -1395,6 +1438,23 @@ These 18 tables are the Silver/Gold normalized output — the actual sourced fac
 > BP0068's `granted_count` is per program year/subclass/occupation. The unique
 > key `(visa_code, program_year, as_of_date)` fits neither cleanly.
 
+### ✅ Built 2026-08-18 — migration `0011`, 432 rows
+
+622,425 BP0068 records aggregated to **(visa_code, program_year)**:
+10 program years × 62 subclasses, 1,710,097 grants.
+
+**Three deliberate deviations from the specification above.** Each is a
+decision, not an oversight:
+
+| Deviation | Reason |
+|---|---|
+| **Unique key is `(visa_code, program_year)`**, with no `as_of_date` | BP0068 is an annual restatement, not a time series of snapshots. An `as_of_date` in the key would accumulate a new row set per run instead of updating. |
+| **One provenance trio, not two** | The dual trio assumed submitted/invited and granted come from different sources on the same row. Only `granted_count` is sourced, so one trio describes the row honestly. A second is added when `invited_count` lands. |
+| **No `granted_count >= 0` check** | BP0068 is confidentialised (`masked` in its own filename): small cells are perturbed and one real row — subclass 110 Interdependency, 2019-20 — reports **-2**. It is stored as published; clamping would fabricate data to satisfy an assumption the source does not share. The parser warns, so a *rise* in such rows reads as a parsing bug rather than a privacy artefact. |
+
+`submitted_count` ships NULL **permanently** (G10, not published in any form).
+`invited_count` ships NULL pending grain reconciliation with `eoi_rounds`.
+
 **Status:** Target (migration `0017`).
 
 ---
@@ -1558,15 +1618,36 @@ is load-bearing.
 | Column | PostgreSQL Type | Nullable / Default | Constraints |
 |---|---|---|---|
 | `id` | `INTEGER` | NOT NULL | **PK**, `auto_increment` |
-| `title` | `TEXT` | NOT NULL | As published by the source |
-| `occupation_code` | `TEXT` | NOT NULL | **FK** → `occupations.code` |
+| `title` | `TEXT` | NOT NULL | As published by the source, verbatim |
+| `title_normalized` | `TEXT` | NOT NULL, indexed | Case/whitespace-folded, footnote markers stripped — what lookups match on |
+| `occupation_code` | `TEXT` | NOT NULL | **No FK** — see below |
 | `title_source` | `TEXT` | NOT NULL | `CHECK (title_source IN ('LIN_19_051','ABS_ANZSCO'))` |
-| `anzsco_edition` | `TEXT` | NOT NULL | — |
+| `anzsco_edition` | `TEXT` | NOT NULL | `2013` (LIN) or `2022` (ABS) |
 | `source_url` / `retrieved_at` / `reliability_tier` | — | NOT NULL | Provenance trio |
 
-**Unique constraint:** `(title, title_source)` — deliberately *not*
+**Unique constraint:** `(title_normalized, title_source)` — deliberately *not*
 `(title)`, because the same title legitimately maps to different codes in the
-two sources.
+two sources. Normalised rather than raw, so the constraint matches how lookups
+actually compare.
+
+> ### ⚠ Correction: this table has NO foreign key to `occupations.code`
+>
+> An earlier revision of this doc specified `occupation_code` as
+> `FK → occupations.code`. **That is wrong and was not built.** The crosswalk
+> is a *reference mapping* and legitimately names codes koshi's occupation
+> table does not carry:
+>
+> - LIN 19/051 is coded against ANZSCO **2013**; 25 of its codes are absent
+>   from 2022.
+> - ABS Table 6 is the **coder list**, including non-occupations such as
+>   `099960 Retired`.
+>
+> With an FK, loading the crosswalk aborts on those rows. The FK belongs on
+> the *consumer* (`eoi_rounds.occupation_code`), and the pipeline checks
+> `occupations` membership before writing a resolved code there — see the
+> resolution note below.
+
+**Live volume (2026-08-18):** 1,929 rows (1,425 ABS + 504 LIN).
 
 **Resolution rule — LIN-first.** Three titles (**Management Consultant**,
 **Plumber (General)**, **Statistician**) resolve to different codes in the two
@@ -1574,7 +1655,18 @@ sources. LIN 19/051 is the binding instrument, so it wins. An ABS-first
 implementation returns wrong codes for these three **without erroring**, which
 is why the rule is recorded in the schema rather than left to the parser.
 
-Coverage: ABS alone 132/140, LIN alone 132/140, **union 140/140**.
+Coverage: ABS alone 132/140, LIN alone 132/140, **union 140/140** — measured
+against a live invitation round, not assumed.
+
+**Resolution writes only codes that exist in `occupations`.** Because
+`eoi_rounds.occupation_code` *is* an FK, a resolved-but-absent code would
+abort the whole batch. Unresolved rows keep `occupation_name_raw` and are
+retried by the `backfill_round_codes` pipeline step, since the crosswalk
+grows independently of the source pages.
+
+**Normalisation** strips trailing footnote markers (`*`, `+`, `†`, …):
+SkillSelect annotates names against notes under the table
+(`Medical Radiation Therapist+`), which is presentation, not part of the name.
 
 ---
 
@@ -1687,21 +1779,43 @@ Most reference tables do not specify whether a change **overwrites** (losing pri
 | C3 | `ceiling_usage` | Domain | Silver | ✅ Built | 0003 |
 | C4 | `occupation_momentum` | Domain | Gold | ✅ Built | 0004 |
 | C5 | `source_pages` | Domain | Bronze | ✅ Built | 0005 |
-| C6 | `visa_subclasses` | Domain | Silver | Target | 0007 |
-| C7 | `english_test_bands` | Domain | Silver | Target | 0008 |
-| C8 | `assessing_bodies` | Domain | Silver | Target | 0009 |
-| C9 | `occupation_assessing_bodies` | Domain | Silver | Target | 0010 |
-| C10 | `points_criteria_reference` | Domain | Silver | Target | 0011 |
-| C11 | `policy_events` | Domain | Silver | Target | 0012 |
-| C12 | `state_nomination_status` | Domain | Silver | Target | 0013 |
-| C13 | `list_change_log` | Domain | Silver | Target | 0014 |
-| C14 | `processing_times` | Domain | Silver | Target | 0015 |
-| C15 | `program_allocation` | Domain | Silver | Target | 0016 |
-| C16 | `application_funnel` | Domain | Silver | Target | 0017 |
-| C17 | `eligibility_requirements` | Domain | Silver | Target | 0018 |
-| C18 | `skills_priority_ratings` | Domain | Silver | Target | 0019 |
+| C6 | `visa_subclasses` | Domain | Silver | ✅ Built | **0011** |
+| C7 | `english_test_bands` | Domain | Silver | Target | — |
+| C8 | `assessing_bodies` | Domain | Silver | Target | — |
+| C9 | `occupation_assessing_bodies` | Domain | Silver | Target | — |
+| C10 | `points_criteria_reference` | Domain | Silver | Target | — |
+| C11 | `policy_events` | Domain | Silver | Target | — |
+| C12 | `state_nomination_status` | Domain | Silver | Target | — |
+| C13 | `list_change_log` | Domain | Silver | Target | — |
+| C14 | `processing_times` | Domain | Silver | Target | — |
+| C15 | `program_allocation` | Domain | Silver | Target | — |
+| C16 | `application_funnel` | Domain | Silver | ✅ Built | **0011** |
+| C17 | `eligibility_requirements` | Domain | Silver | Target | — |
+| C18 | `skills_priority_ratings` | Domain | Silver | Target | — |
+| C19 | `anzsco_osca_crosswalk` | Domain | Silver | Target | — |
+| C20 | `occupation_list_membership` | Domain | Silver | Target | — |
+| C21 | `visa_fees` | Domain | Silver | Target | — |
+| C22 | `occupation_titles` | Domain | Silver | ✅ Built | **0009** |
 
-**Total: 29 entities** (6 control-plane, 5 data-plane, 18 domain-fact).
+**Migration numbers for unbuilt tables are now `—` rather than a planned
+number.** The original 0007–0019 allocation assumed tables would land in
+catalog order; they have not, and a stale planned number is worse than none.
+Actual chain to date:
+
+| Migration | What it did |
+|---|---|
+| `0001`–`0006` | Original occupation slice + fault-tolerance retrofit |
+| `0007` | `eoi_rounds.occupation_name_raw`; unique key moved onto the name |
+| `0008` | `occupations.code_grain` |
+| `0009` | `occupation_titles` (C22) |
+| `0010` | `occupations.anzsco_edition` |
+| `0011` | `visa_subclasses` (C6) + `application_funnel` (C16) |
+
+**Total: 33 entities** (6 control-plane, 5 data-plane, 22 domain-fact) —
+C19–C22 were added by the 2026-08-17 audit.
+
+**Built as of 2026-08-18: 9 tables** — C1–C6, C16, C22, plus `source_pages`.
+Every other row above is specification, not code.
 
 ---
 
