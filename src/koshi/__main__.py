@@ -17,7 +17,10 @@ Runs, in order:
 4. sync_skillselect_rounds — persists new EOI rounds, resolves each one's
    occupation_code via the crosswalk, and (per pipeline.py) refreshes
    occupation_momentum for every occupation a new round touches.
-5. seed_ceiling_usage — persists any manually-curated ceiling data in
+5. sync_skillselect_previous_rounds — backfills historical rounds. Momentum
+   needs a trailing window of three rounds and the current-round page
+   publishes one, so without this every occupation's trend is null.
+6. seed_ceiling_usage — persists any manually-curated ceiling data in
    seeds/ceiling_usage_manual.yaml. That file is currently empty by design:
    per-occupation ceilings are not published anywhere at koshi's grain.
 
@@ -47,6 +50,7 @@ from koshi.pipeline import (
     sync_abs_occupations,
     sync_anzsco_occupations,
     sync_occupation_titles,
+    sync_skillselect_previous_rounds,
     sync_skillselect_rounds,
 )
 from koshi.run_summary import write_run_summary
@@ -88,6 +92,7 @@ def main() -> int:
         ("abs_occupations", lambda: sync_abs_occupations(session)),
         ("occupation_titles", lambda: sync_occupation_titles(session)),
         ("skillselect_rounds", lambda: sync_skillselect_rounds(session)),
+        ("skillselect_previous_rounds", lambda: sync_skillselect_previous_rounds(session)),
         ("ceiling_usage_seed", lambda: seed_ceiling_usage(session, CEILING_USAGE_SEED_PATH)),
     ]
 

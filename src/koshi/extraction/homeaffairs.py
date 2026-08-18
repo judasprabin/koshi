@@ -63,7 +63,27 @@ def assert_not_soft_404(page_html: str, *, url: str) -> None:
             )
 
 
-def decode_hidden_field(page_html: str, *, root_key: str) -> list[str]:
+def _decode_payload(page_html: str) -> dict:
+    """Extract and JSON-decode the hidden field's payload object."""
+    match = _HIDDEN_FIELD_RE.search(page_html)
+    if match is None:
+        raise HiddenFieldError(
+            f"hidden field {HIDDEN_FIELD_ID!r} not found - possible page redesign"
+        )
+    try:
+        payload = json.loads(html_module.unescape(match.group(1)))
+    except json.JSONDecodeError as exc:
+        raise HiddenFieldError(f"hidden field is not valid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise HiddenFieldError(
+            f"expected a JSON object at the hidden field, got {type(payload).__name__}"
+        )
+    return payload
+
+
+def decode_hidden_field(
+    page_html: str, *, root_key: str, block_key: str = "block"
+) -> list[str]:
     """Decode a Home Affairs page into its list of HTML content blocks.
 
     Args:
@@ -71,29 +91,19 @@ def decode_hidden_field(page_html: str, *, root_key: str) -> list[str]:
         root_key: The JSON root key for this page - `content` for most
             pages, `criteria` for previous-rounds. Comes from the resource's
             extraction strategy config, never guessed.
+        block_key: The per-item key holding the HTML. `content` items use
+            `block`; `criteria` items use `description`. Two axes of
+            variation on the same site, so both are configured rather than
+            sniffed.
 
     Returns:
         The HTML string of each content block, in document order.
 
     Raises:
         HiddenFieldError: if the hidden field is missing, the payload is not
-            valid JSON, or `root_key` is absent from it.
+            valid JSON, or `root_key`/`block_key` are absent from it.
     """
-    match = _HIDDEN_FIELD_RE.search(page_html)
-    if match is None:
-        raise HiddenFieldError(
-            f"hidden field {HIDDEN_FIELD_ID!r} not found - possible page redesign"
-        )
-
-    try:
-        payload = json.loads(html_module.unescape(match.group(1)))
-    except json.JSONDecodeError as exc:
-        raise HiddenFieldError(f"hidden field is not valid JSON: {exc}") from exc
-
-    if not isinstance(payload, dict):
-        raise HiddenFieldError(
-            f"expected a JSON object at the hidden field, got {type(payload).__name__}"
-        )
+    payload = _decode_payload(page_html)
 
     if root_key not in payload:
         raise HiddenFieldError(
@@ -108,10 +118,42 @@ def decode_hidden_field(page_html: str, *, root_key: str) -> list[str]:
             f"expected a list under {root_key!r}, got {type(items).__name__}"
         )
 
-    blocks = [item["block"] for item in items if isinstance(item, dict) and "block" in item]
+    blocks = [
+        item[block_key] for item in items if isinstance(item, dict) and block_key in item
+    ]
     if not blocks:
-        raise HiddenFieldError(f"no content blocks found under {root_key!r}")
+        present = sorted({k for item in items if isinstance(item, dict) for k in item})
+        raise HiddenFieldError(
+            f"no {block_key!r} values found under {root_key!r}; items carry "
+            f"{present!r}. Item shape differs per page - check this resource's "
+            f"configured block key."
+        )
     return blocks
+
+
+def decode_hidden_field_items(
+    page_html: str, *, root_key: str
+) -> list[dict]:
+    """Decode to the raw item dicts rather than just their HTML.
+
+    `previous-rounds` carries the round date on the item itself (`title`),
+    which is more reliable than parsing it back out of the HTML - the
+    heading's own `id` attribute is demonstrably stale on these pages
+    (`id="invitations-issued-13062024"` above text reading "13 November
+    2025").
+    """
+    blocks_payload = _decode_payload(page_html)
+    if root_key not in blocks_payload:
+        raise HiddenFieldError(
+            f"root key {root_key!r} absent from hidden field; page carries "
+            f"{sorted(blocks_payload)!r}"
+        )
+    items = blocks_payload[root_key]
+    if not isinstance(items, list):
+        raise HiddenFieldError(
+            f"expected a list under {root_key!r}, got {type(items).__name__}"
+        )
+    return [item for item in items if isinstance(item, dict)]
 
 
 def find_table_after_heading(block_html: str, *, heading_contains: str) -> Tag:

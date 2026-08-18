@@ -14,6 +14,9 @@ from koshi.extraction.anzsco_occupations import (
 )
 from koshi.extraction.abs_anzsco import parse_abs_occupations, parse_abs_titles
 from koshi.extraction.lin19051 import parse_lin_titles
+from koshi.extraction.skillselect_previous_rounds import (
+    parse_skillselect_previous_rounds,
+)
 from koshi.extraction.skillselect_rounds import parse_skillselect_rounds
 from koshi.models.eoi_rounds import EoiRound
 from koshi.models.occupation_titles import OccupationTitle
@@ -44,6 +47,9 @@ class _RowsWithSkipCount(list):
 
 ANZSCO_URL = "https://www.jobsandskills.gov.au/data/occupation-and-industry-profiles/occupations-anzsco"
 SKILLSELECT_ROUNDS_URL = "https://immi.homeaffairs.gov.au/visas/working-in-australia/skillselect/invitation-rounds"
+SKILLSELECT_PREVIOUS_ROUNDS_URL = (
+    "https://immi.homeaffairs.gov.au/visas/working-in-australia/skillselect/previous-rounds"
+)
 # The instrument body, one iframe-hop from the register page. The date
 # segments pin the compilation; bump them when a new compilation lands.
 LIN19051_URL = (
@@ -289,6 +295,82 @@ def sync_occupation_titles(
     return written
 
 
+def sync_skillselect_previous_rounds(
+    session: Session,
+    *,
+    url: str = SKILLSELECT_PREVIOUS_ROUNDS_URL,
+    client: httpx.Client | None = None,
+) -> list[EoiRound]:
+    """Backfill historical EOI rounds from the previous-rounds archive.
+
+    The current-round page publishes one round; momentum needs a trailing
+    window of three, so without this every occupation's trend is null. Of
+    19 archived rounds, 4 carry occupation tables.
+    """
+    page, _changed, text = fetch_and_register(
+        session, url=url, domain="immi.homeaffairs.gov.au",
+        category="skillselect_previous_rounds", client=client,
+    )
+    if not _needs_extraction(page):
+        return []
+
+    result = parse_skillselect_previous_rounds(
+        text, source_url=url, retrieved_at=dt.datetime.now(dt.timezone.utc)
+    )
+    logger.info(
+        "previous_rounds: %d rounds parsed, %d summary-only, %d rows, %d skipped",
+        result.rounds_parsed, result.rounds_without_occupations,
+        len(result.rows), result.skipped,
+    )
+    resolve_round_occupation_codes(session, result.rows)
+    new_rounds = _persist_rounds(session, result.rows)
+
+    page.last_extracted_at = dt.datetime.now(dt.timezone.utc)
+    session.commit()
+
+    refresh_momentum_for_codes(
+        session, {r.occupation_code for r in new_rounds if r.occupation_code}
+    )
+    rows = _RowsWithSkipCount(new_rounds)
+    rows.skipped = result.skipped
+    return rows
+
+
+def _persist_rounds(session: Session, rounds: list[EoiRound]) -> list[EoiRound]:
+    """Insert rounds not already stored, deduping within the batch too.
+
+    Shared by the current-round and previous-rounds syncs, which overlap:
+    a round can appear on both pages. Keyed on
+    (visa_code, occupation_name_raw, round_date) — the name, not the code,
+    because an unresolved row's code is NULL and Postgres treats NULLs as
+    distinct, which would defeat the check entirely.
+
+    The in-batch `staged_keys` set is required because the production
+    session runs autoflush=False: an earlier session.add() is not flushed
+    before the next iteration's SELECT, so two identical rows in one page
+    would both pass the DB check and collide at commit.
+    """
+    new_rounds: list[EoiRound] = []
+    staged_keys: set[tuple[str, str, dt.date]] = set()
+    for round_ in rounds:
+        key = (round_.visa_code, round_.occupation_name_raw, round_.round_date)
+        if key in staged_keys:
+            continue
+        existing = session.scalar(
+            select(EoiRound).where(
+                EoiRound.visa_code == round_.visa_code,
+                EoiRound.occupation_name_raw == round_.occupation_name_raw,
+                EoiRound.round_date == round_.round_date,
+            )
+        )
+        if existing is not None:
+            continue
+        session.add(round_)
+        staged_keys.add(key)
+        new_rounds.append(round_)
+    return new_rounds
+
+
 def resolve_round_occupation_codes(session: Session, rounds: list[EoiRound]) -> int:
     """Fill occupation_code on scraped rounds from the name crosswalk.
 
@@ -365,41 +447,10 @@ def sync_skillselect_rounds(
     # Upsert by (visa_code, occupation_name_raw, round_date): a whole-page
     # hash change (build stamp, "last reviewed" date) re-parses the same
     # round data and must not manufacture duplicate rows / fake momentum.
-    #
-    # Keyed on the name, not the code. SkillSelect publishes occupation
-    # names only, so occupation_code stays NULL for any row the crosswalk
-    # cannot resolve, and Postgres treats NULLs as distinct, so a
-    # code-keyed check would not dedup those rows at all. The name is the
-    # stable natural key regardless of resolution outcome.
-    #
-    # The DB existence check alone isn't enough to dedup rows *within* this
-    # same batch: the production session (koshi.db.SessionLocal) sets
-    # autoflush=False, so an earlier session.add() in this loop is never
-    # flushed before the next iteration's SELECT runs. If a single scraped
-    # page contains two rows with an identical (visa_code, occupation_code,
-    # round_date) — plausible in messy government HTML tables — both would
-    # pass the "not found in DB" check, both would be queued, and the
-    # batch commit below would then raise an unhandled UniqueViolation,
-    # rolling back every valid new round from that page. Tracking keys
-    # already staged in this call closes that gap.
-    new_rounds = []
-    staged_keys: set[tuple[str, str, dt.date]] = set()
-    for round_ in parse_result.rows:
-        key = (round_.visa_code, round_.occupation_name_raw, round_.round_date)
-        if key in staged_keys:
-            continue
-        existing = session.scalar(
-            select(EoiRound).where(
-                EoiRound.visa_code == round_.visa_code,
-                EoiRound.occupation_name_raw == round_.occupation_name_raw,
-                EoiRound.round_date == round_.round_date,
-            )
-        )
-        if existing is not None:
-            continue
-        session.add(round_)
-        staged_keys.add(key)
-        new_rounds.append(round_)
+    # See _persist_rounds for why the key is the name and why in-batch
+    # dedup is also required. Shared with the previous-rounds sync, whose
+    # archive genuinely overlaps this page.
+    new_rounds = _persist_rounds(session, parse_result.rows)
     # Only advance the extraction watermark once parsing AND persisting
     # have both succeeded — see sync_anzsco_occupations above.
     page.last_extracted_at = dt.datetime.now(dt.timezone.utc)
