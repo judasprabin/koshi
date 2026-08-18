@@ -22,6 +22,8 @@ class _FakeSession:
 def test_main_returns_0_when_all_steps_succeed(monkeypatch):
     monkeypatch.setattr(main_module, "SessionLocal", lambda: _FakeSession())
     monkeypatch.setattr(main_module, "sync_anzsco_occupations", lambda session: [1, 2])
+    monkeypatch.setattr(main_module, "sync_abs_occupations", lambda session: [1])
+    monkeypatch.setattr(main_module, "sync_occupation_titles", lambda session: [1])
     monkeypatch.setattr(main_module, "sync_skillselect_rounds", lambda session: [1])
     monkeypatch.setattr(main_module, "seed_ceiling_usage", lambda session, path: [1, 2, 3])
 
@@ -37,6 +39,14 @@ def test_main_returns_2_and_still_runs_remaining_steps_when_one_step_fails(monke
         calls.append("anzsco")
         raise RuntimeError("boom")
 
+    def ok_abs(session):
+        calls.append("abs")
+        return [1]
+
+    def ok_titles(session):
+        calls.append("titles")
+        return [1]
+
     def ok_sync(session):
         calls.append("skillselect")
         return [1]
@@ -47,13 +57,15 @@ def test_main_returns_2_and_still_runs_remaining_steps_when_one_step_fails(monke
 
     monkeypatch.setattr(main_module, "SessionLocal", lambda: _FakeSession())
     monkeypatch.setattr(main_module, "sync_anzsco_occupations", failing_sync)
+    monkeypatch.setattr(main_module, "sync_abs_occupations", ok_abs)
+    monkeypatch.setattr(main_module, "sync_occupation_titles", ok_titles)
     monkeypatch.setattr(main_module, "sync_skillselect_rounds", ok_sync)
     monkeypatch.setattr(main_module, "seed_ceiling_usage", ok_seed)
 
     exit_code = main_module.main()
 
     assert exit_code == 2
-    assert calls == ["anzsco", "skillselect", "ceiling"]
+    assert calls == ["anzsco", "abs", "titles", "skillselect", "ceiling"]
 
 
 def test_main_returns_3_when_all_steps_fail(monkeypatch):
@@ -62,6 +74,11 @@ def test_main_returns_3_when_all_steps_fail(monkeypatch):
 
     monkeypatch.setattr(main_module, "SessionLocal", lambda: _FakeSession())
     monkeypatch.setattr(main_module, "sync_anzsco_occupations", failing)
+    # Every step must be patched: an unpatched one calls the real sync,
+    # which would reach the network from a unit test and make this pass for
+    # the wrong reason (it fails anyway, so exit 3 still holds).
+    monkeypatch.setattr(main_module, "sync_abs_occupations", failing)
+    monkeypatch.setattr(main_module, "sync_occupation_titles", failing)
     monkeypatch.setattr(main_module, "sync_skillselect_rounds", failing)
     monkeypatch.setattr(main_module, "seed_ceiling_usage", failing)
 
@@ -118,6 +135,8 @@ def test_main_writes_a_run_summary_reflecting_each_steps_outcome(monkeypatch):
 
     monkeypatch.setattr(main_module, "SessionLocal", lambda: _FakeSession())
     monkeypatch.setattr(main_module, "sync_anzsco_occupations", lambda session: [1])
+    monkeypatch.setattr(main_module, "sync_abs_occupations", lambda session: [])
+    monkeypatch.setattr(main_module, "sync_occupation_titles", lambda session: [])
     monkeypatch.setattr(main_module, "sync_skillselect_rounds", lambda session: [])
     monkeypatch.setattr(main_module, "seed_ceiling_usage", lambda session, path: [])
     monkeypatch.setattr(main_module, "write_run_summary", fake_write_run_summary)
@@ -127,8 +146,10 @@ def test_main_writes_a_run_summary_reflecting_each_steps_outcome(monkeypatch):
     assert "summary" in written
     summary = written["summary"]
     assert summary["steps"][0] == {"name": "anzsco_occupations", "status": "ok", "count": 1}
-    assert summary["steps"][1] == {"name": "skillselect_rounds", "status": "ok", "count": 0}
-    assert summary["steps"][2] == {"name": "ceiling_usage_seed", "status": "ok", "count": 0}
+    assert summary["steps"][1] == {"name": "abs_occupations", "status": "ok", "count": 0}
+    assert summary["steps"][2] == {"name": "occupation_titles", "status": "ok", "count": 0}
+    assert summary["steps"][3] == {"name": "skillselect_rounds", "status": "ok", "count": 0}
+    assert summary["steps"][4] == {"name": "ceiling_usage_seed", "status": "ok", "count": 0}
     # finished_at/exit_code must land in the written summary, not just be
     # returned from main() — a summary file read after the fact is the
     # only observability a cron-triggered run has.
@@ -149,6 +170,9 @@ def test_main_writes_an_error_detail_for_a_failed_step(monkeypatch):
 
     monkeypatch.setattr(main_module, "SessionLocal", lambda: _FakeSession())
     monkeypatch.setattr(main_module, "sync_anzsco_occupations", failing_sync)
+    # Patched so this unit test never reaches the network.
+    monkeypatch.setattr(main_module, "sync_abs_occupations", lambda session: [])
+    monkeypatch.setattr(main_module, "sync_occupation_titles", lambda session: [])
     monkeypatch.setattr(main_module, "sync_skillselect_rounds", lambda session: [])
     monkeypatch.setattr(main_module, "seed_ceiling_usage", lambda session, path: [])
     monkeypatch.setattr(main_module, "write_run_summary", fake_write_run_summary)
@@ -186,6 +210,8 @@ def test_main_threads_parser_skip_count_into_the_step_summary(monkeypatch):
 
     monkeypatch.setattr(main_module, "SessionLocal", lambda: _FakeSession())
     monkeypatch.setattr(main_module, "sync_anzsco_occupations", lambda session: anzsco_result)
+    monkeypatch.setattr(main_module, "sync_abs_occupations", lambda session: [])
+    monkeypatch.setattr(main_module, "sync_occupation_titles", lambda session: [])
     monkeypatch.setattr(main_module, "sync_skillselect_rounds", lambda session: skillselect_result)
     # ceiling_usage_seed returns a plain list in production (no parser skip
     # count to surface) — must not gain a "skipped" key from unrelated code.
@@ -196,5 +222,5 @@ def test_main_threads_parser_skip_count_into_the_step_summary(monkeypatch):
 
     steps = written["summary"]["steps"]
     assert steps[0]["skipped"] == 4
-    assert steps[1]["skipped"] == 0
-    assert "skipped" not in steps[2]
+    assert steps[3]["skipped"] == 0
+    assert "skipped" not in steps[4]

@@ -27,7 +27,8 @@ from xml.etree import ElementTree as ET
 logger = logging.getLogger(__name__)
 
 ANZSCO_EDITION = "2022"
-DEFAULT_SHEET = "Table 6"
+DEFAULT_SHEET = "Table 6"   # flat coder list: name -> code resolution
+OCCUPATION_SHEET = "Table 5"  # the classification proper: the real occupation set
 
 _NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 _REL_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
@@ -88,6 +89,60 @@ def _row_values(row, shared: list[str]) -> list[str]:
         else:
             values.append(value.text or "")
     return [v.strip() for v in values]
+
+
+def parse_abs_occupations(
+    workbook_bytes: bytes, *, sheet_name: str = OCCUPATION_SHEET
+) -> ParseResult:
+    """Parse the hierarchy sheet into the real occupation set.
+
+    Table 5 is the classification proper - major group -> sub-major -> minor
+    -> unit group -> occupation - and its 1,076 six-digit codes are the
+    actual occupation universe. Table 6, by contrast, is the coder list and
+    includes non-occupations (`099960 Retired`), so it is right for
+    resolving a name to a code but wrong for defining what an occupation is.
+
+    Rows are *indented by hierarchy level*, so a code's column position
+    varies by depth. Each row is scanned for its first six-digit cell and
+    the next non-empty cell is taken as the title, rather than assuming a
+    fixed column.
+    """
+    try:
+        archive = zipfile.ZipFile(BytesIO(workbook_bytes))
+    except zipfile.BadZipFile as exc:
+        raise AbsWorkbookError(f"not a readable .xlsx workbook: {exc}") from exc
+
+    with archive:
+        shared = _shared_strings(archive)
+        sheet = ET.fromstring(archive.read(_sheet_path(archive, sheet_name)))
+
+        rows: list[AbsTitle] = []
+        seen: set[str] = set()
+        skipped = 0
+        for row in sheet.iter(f"{_NS}row"):
+            values = _row_values(row, shared)
+            code_index = next(
+                (i for i, v in enumerate(values) if _DIGITS_RE.fullmatch(v) and len(v) == 6),
+                None,
+            )
+            if code_index is None:
+                continue  # heading/spacer/higher-level row, not a data problem
+            code = values[code_index]
+            title = next((v for v in values[code_index + 1:] if v and not v.isdigit()), "")
+            if not title:
+                logger.warning("skipping ABS occupation row %r: no title", values)
+                skipped += 1
+                continue
+            if code in seen:
+                continue
+            seen.add(code)
+            rows.append(AbsTitle(title=title, occupation_code=code))
+
+    if not rows:
+        raise AbsWorkbookError(
+            f"sheet {sheet_name!r} yielded no occupations - possible format change"
+        )
+    return ParseResult(rows=rows, skipped=skipped)
 
 
 def parse_abs_titles(workbook_bytes: bytes, *, sheet_name: str = DEFAULT_SHEET) -> ParseResult:

@@ -7,10 +7,19 @@ Usage (after `alembic upgrade head`):
 Runs, in order:
 1. sync_anzsco_occupations — occupations must exist first: eoi_rounds and
    ceiling_usage rows both carry a FK to occupations.code.
-2. sync_skillselect_rounds — persists new EOI rounds and (per pipeline.py)
-   refreshes occupation_momentum for every occupation a new round touches.
-3. seed_ceiling_usage — persists the manually-curated ceiling data shipped
-   in seeds/ceiling_usage_manual.yaml.
+2. sync_abs_occupations — merges the ABS classification's full occupation
+   set. JSA's browse listing surfaces only 878 of ANZSCO's 1,076 six-digit
+   occupations, and rounds referencing the remainder cannot be linked.
+3. sync_occupation_titles — loads the name->code crosswalk from LIN 19/051
+   and the ABS ANZSCO workbook. Must precede the rounds sync: SkillSelect
+   publishes occupation names, never codes, so without the crosswalk every
+   round lands with a NULL occupation_code and no momentum is computed.
+4. sync_skillselect_rounds — persists new EOI rounds, resolves each one's
+   occupation_code via the crosswalk, and (per pipeline.py) refreshes
+   occupation_momentum for every occupation a new round touches.
+5. seed_ceiling_usage — persists any manually-curated ceiling data in
+   seeds/ceiling_usage_manual.yaml. That file is currently empty by design:
+   per-occupation ceilings are not published anywhere at koshi's grain.
 
 Each step is isolated: a failure in one is logged and recorded in the run
 summary, but does NOT prevent the remaining steps from running — e.g.
@@ -34,7 +43,12 @@ from sqlalchemy import text
 
 from koshi.db import SessionLocal
 from koshi.logging_config import setup_logging
-from koshi.pipeline import sync_anzsco_occupations, sync_skillselect_rounds
+from koshi.pipeline import (
+    sync_abs_occupations,
+    sync_anzsco_occupations,
+    sync_occupation_titles,
+    sync_skillselect_rounds,
+)
 from koshi.run_summary import write_run_summary
 from koshi.seeds.loader import seed_ceiling_usage
 
@@ -71,6 +85,8 @@ def main() -> int:
 
     steps = [
         ("anzsco_occupations", lambda: sync_anzsco_occupations(session)),
+        ("abs_occupations", lambda: sync_abs_occupations(session)),
+        ("occupation_titles", lambda: sync_occupation_titles(session)),
         ("skillselect_rounds", lambda: sync_skillselect_rounds(session)),
         ("ceiling_usage_seed", lambda: seed_ceiling_usage(session, CEILING_USAGE_SEED_PATH)),
     ]
