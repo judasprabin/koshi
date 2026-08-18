@@ -1,9 +1,25 @@
-# koshi — Source URL Catalog (16 sources, verified)
+# koshi — Source URL Catalog (23 sources, content-verified)
 
-**Status:** Research artifact — exact, live-verified URLs for every source in
-the canonical 16-source catalog (`docs/superpowers/specs/2026-08-16-koshi-etl-architecture.md` §4).
-**Date:** 2026-08-16
+**Status:** Research artifact — exact URLs and verified retrieval methods for
+every koshi source (`docs/superpowers/specs/2026-08-16-koshi-etl-architecture.md` §4).
+**Date:** 2026-08-16 · **Revised 2026-08-18** after the three-agent source audit
 **Author:** Prabin Karki (via subagent URL-verification task)
+
+> ### 2026-08-18 revision
+>
+> The original catalog verified that URLs **respond**. The 2026-08-17 audit
+> fetched and decoded what they **contain**, and nine of the sixteen entries
+> were materially wrong: the wrong URL, the wrong content type, the wrong
+> extraction tier, or the wrong authority entirely.
+>
+> The single largest correction: **no `immi.homeaffairs.gov.au` page serves an
+> HTML `<table>`.** Every one ships its content as HTML-entity-encoded JSON
+> inside a hidden input. Entries below that said "HTML table" described markup
+> that does not exist, which is why both built parsers extract zero rows.
+>
+> Evidence: `docs/superpowers/research/source-audit/` — `agent1-page-audit.md`
+> (pages), `agent2-schema-mapping.md` (schema), `agent3-gap-search.md` (gaps),
+> summarised in `CONSOLIDATED-FINDINGS.md`.
 
 ## How to read this
 
@@ -11,22 +27,41 @@ One table per source. Each row records, for that source's live page(s):
 
 - **URL** — the exact URL to point `SourceSpec.url` at. Where a page redirects,
   the *effective* (final) URL is shown and the redirect noted in Notes.
-- **Content type** — `HTML table` / `PDF` / `prose` / `dataset` — what the page
-  actually serves, so the extraction tier choice is honest.
+- **Content type** — what the page *actually serves*, so the extraction tier
+  choice is honest. Values now include `hidden-field JSON` (Home Affairs' real
+  delivery mechanism), `JSON API`, `XLSX pivot cache`, `epub HTML tables`,
+  alongside `HTML table` / `PDF` / `prose` / `dataset`.
+- **Retrieval** — the concrete mechanism. For hidden-field pages this includes
+  the **JSON root key**, which is *not* uniform across the site: main pages use
+  `content`, `previous-rounds` uses `criteria`. Storing this per resource is
+  mandatory, not cosmetic.
 - **Cadence** — how often the page changes (drives the §9 cadence groups).
-- **Tier** — extraction tier (1 crawl, 2 HTML, 3 PDF, 4 LLM, 5 manual) per the
-  canonical doc.
+- **Tier** — extraction tier (1 crawl, 2 deterministic, 3 PDF, 4 LLM, 5 manual).
 - **Feeds** — the Postgres table(s) the source populates.
-- **Status** — `CONFIRMED` = `curl -L` returned 2xx/3xx from this environment;
-  `PROPOSED` = could not be verified live (reason in Notes). No URL below is
-  fabricated; every `PROPOSED` entry is a real, researched URL that either
-  returned a non-2xx or was blocked at the network edge, and is flagged as such.
+- **Status** — `VERIFIED` = content fetched **and decoded**, structure confirmed;
+  `CONFIRMED` = URL returns 2xx but content unverified; `PROPOSED` = could not be
+  verified live (reason in Notes); `DEAD` = does not serve what the catalog
+  claimed. No URL below is fabricated.
 
-Verification method: `curl -sS -o /dev/null -w "%{http_code} %{url_effective}" -L`
-with a Chrome 124 desktop `User-Agent` (to avoid CDN blocking on `.gov.au`
-sites), `--connect-timeout 15 --max-time 30`, run from a datacenter IP.
-Where a site 403s datacenter IPs, that is reported honestly rather than guessed
-around.
+Verification method (2026-08-17 pass): live fetch, then hidden-input decode
+(`html.unescape` → `json.loads`) or format-appropriate parse, with structure and
+row counts recorded. The earlier pass used
+`curl -sS -o /dev/null -w "%{http_code} %{url_effective}" -L` with a Chrome 124
+desktop `User-Agent` and reported status only. Where a site 403s datacenter IPs,
+that is reported honestly rather than guessed around.
+
+### The Home Affairs decode recipe
+
+Applies to sources 2, 3, 4, 5, 6, 7, 8, 15, 17. Raw HTML contains **zero
+`<table>` tags**; the content is in:
+
+```
+<input id="ctl00_PlaceHolderMain_PageSchemaHiddenField_Input" value="...">
+```
+
+Decode: `html.unescape(value)` → `json.loads` → walk the root key
+(`content[].block`, or `criteria` on `previous-rounds`). No JS rendering and no
+headless browser is required for any of them.
 
 ---
 
@@ -35,16 +70,30 @@ around.
 | Field | Value |
 |---|---|
 | URL | `https://www.jobsandskills.gov.au/data/occupation-and-industry-profiles/occupations-anzsco` |
-| Content type | HTML (occupation/industry profile search + ANZSCO dataset) |
+| Content type | HTML browse surface — **not** a code/title table |
+| Retrieval | Use the ABS structure workbook instead (source 18) for code+title |
 | Cadence | Near-static (ANZSCO version changes every few years) |
-| Tier | 2 (deterministic HTML) |
+| Tier | 2 (deterministic) |
 | Feeds | `occupations` — code, name, unit_group |
-| Status | **CONFIRMED** (200) |
+| Status | **VERIFIED** — page live; **superseded as the code/title source** |
 
-Notes: This is the already-built source (`pipeline.py:36` `ANZSCO_URL`). It is
-the occupation-and-industry-profile ANZSCO browse/search surface. The *legal*
-ANZSCO definition (the new `Migration (ANZSCO Definition) Specification 2024`)
-is a separate instrument — see source 9.
+Notes: This is the already-built source (`pipeline.py:36` `ANZSCO_URL`).
+
+**Three corrections from the audit:**
+
+1. **ANZSCO is being retired.** JSA carries a sitewide banner announcing the
+   move to **OSCA** (Occupation Standard Classification for Australia). OSCA has
+   **1,577** entries vs ANZSCO's **1,236**; JSA already dual-publishes ratings
+   under both. Recommendation is *not* to migrate: the binding instrument
+   (LIN 19/051) and every state list remain ANZSCO-coded. Keep ANZSCO as the PK,
+   add an `anzsco_edition` column, and carry the ABS crosswalk (source 19).
+2. **Three ANZSCO editions are simultaneously live** — `F2024L01616` pins
+   migration to **2013**; the CSOL in `F2024L01618` is coded on **2022**;
+   LIN 19/051 is on **2013**, and 25 of its codes are absent from 2022. An
+   edition column is therefore load-bearing, not bookkeeping.
+3. **This page is not where code+title lives.** For the authoritative
+   title→code mapping use source 18 (ABS structure workbook, Table 6) plus
+   source 9's Table 5 — see source 20 for why the union is required.
 
 ---
 
@@ -53,32 +102,97 @@ is a separate instrument — see source 9.
 | Field | Value |
 |---|---|
 | URL | `https://immi.homeaffairs.gov.au/visas/working-in-australia/skillselect/invitation-rounds` |
-| Content type | HTML table (per-round thresholds + invitations) |
+| Content type | **hidden-field JSON** — zero `<table>` tags in raw HTML |
+| Retrieval | Hidden-input decode, root key **`content`** |
 | Cadence | ~monthly (a new row per invitation round) |
-| Tier | 2 (deterministic HTML) |
-| Feeds | `eoi_rounds` — threshold_points, invitations_issued, round_date |
-| Status | **CONFIRMED** (200) |
+| Tier | 2 (deterministic) |
+| Feeds | `eoi_rounds` — threshold_points, round_date |
+| Status | **VERIFIED** — decoded, 4 tables found |
 
-Notes: Already built (`pipeline.py:37` `SKILLSELECT_ROUNDS_URL`). This exact
-URL is also the source for the funnel's `submitted_count` / `invited_count`
-(source 15) — piggyback, do not fetch twice.
+Notes: Already built (`pipeline.py:37` `SKILLSELECT_ROUNDS_URL`), and **the
+built parser extracts zero rows.** Two independent reasons:
+
+1. **Content type was wrong.** The page has no HTML tables at all. Use the
+   decode recipe above.
+2. **Table B's shape was wrong.** After decoding, Table B
+   (*"Invitations issued by occupation and minimum score invited"*) has
+   **2 columns — `Occupation | minimum score`** — and 140 data rows. The parser
+   at `extraction/skillselect_rounds.py:49` unpacks **3** cells per row, so every
+   row raises `ValueError`, is caught, and is skipped. A 100% skip rate
+   currently exits cleanly; it should be a hard failure.
+
+**The join-key problem (blocker).** Table B publishes occupation **names**
+("Actuary", "Agricultural Consultant", "Carpenter") and **never ANZSCO codes**,
+but `eoi_rounds.occupation_code` is an FK to `occupations.code`. No selector fix
+resolves this — it requires the crosswalk in source 20.
+
+The four decoded tables: **A** round totals (`Visa type | EOIs Invited | Tie
+break date`), **B** occupation × minimum score (140 rows), **C** monthly
+invitation matrix by subclass, **D** state/territory nominations.
+
+`invitations_issued` is **not** available at Table B's grain — it lives in
+Tables A and C at coarser grain. See source 15.
 
 ---
 
-## 3. Occupation ceilings / migration program planning levels
+## 3. Migration program planning levels
+
+> **This entry previously conflated two different things.** Planning levels are
+> real and extractable. Per-occupation ceilings are a *separate* dataset that is
+> **no longer published** — split out as source 3b below.
 
 | Field | Value |
 |---|---|
 | URL | `https://immi.homeaffairs.gov.au/what-we-do/migration-program-planning-levels` |
-| Content type | Prose page linking to the periodic planning-levels **PDF** report |
-| Cadence | Irregular (a few times per year, aligned to the Federal Budget + mid-year updates) |
-| Tier | 5 (manual YAML curation) — the PDF is tier 3, deliberately unbuilt |
-| Feeds | `ceiling_usage` — ceiling; `program_allocation` — places, stream_name |
-| Status | **CONFIRMED** (200) |
+| Content type | **hidden-field JSON** — full 3-year table, **zero PDFs on the page** |
+| Retrieval | Hidden-input decode, root key `content` |
+| Cadence | Irregular (a few times per year, Budget + mid-year updates) |
+| Tier | **2** (was catalogued as tier 5 / PDF — wrong) |
+| Feeds | `program_allocation` — places, stream_name |
+| Status | **VERIFIED** — decoded in full |
 
-Notes: Already the `source_url` in `seeds/ceiling_usage_manual.yaml`. The page
-is the stable index; the actual numbers live in linked PDFs that change URL
-each release. Curate from the page + its latest PDF rather than scraping.
+Notes: The catalog claimed the numbers live in linked PDFs requiring manual
+curation. The audit found **no PDFs on this page at all**; the complete
+three-year planning-levels table is in the hidden-field JSON and is
+Tier-2 extractable. `program_allocation` is buildable from this today.
+
+Grain is **visa category** (Skilled / Family / Special Eligibility and their
+streams). There are **no per-occupation rows** — see 3b.
+
+---
+
+## 3b. Occupation ceilings — **NOT PUBLISHED**
+
+| Field | Value |
+|---|---|
+| URL | ~~`https://immi.homeaffairs.gov.au/visas/working-in-australia/skillselect/occupation-ceilings`~~ |
+| Content type | — |
+| Cadence | — |
+| Tier | — |
+| Feeds | `ceiling_usage` (currently unpopulated by design) |
+| Status | **DEAD** — HTTP 404, independently re-verified 2026-08-18 |
+
+Notes: Per-occupation invitation ceilings are **not routinely published
+anywhere**. Established by three independent checks:
+
+- `/skillselect/occupation-ceilings` returns **HTTP 404**.
+- The live SkillSelect "Occupation ceilings" section is **599 bytes of prose**
+  with zero tables.
+- **data.gov.au has no SkillSelect/EOI dataset.**
+
+The only PY2025-26 ceiling table found is inside an **FOI disclosure release**
+(`homeaffairs.gov.au/foi/files/2026/fa-260100545-document-released.PDF`) as
+**scanned page images**, at **4-digit unit-group grain** — not the 6-digit grain
+`ceiling_usage` is defined at.
+
+⚠ **Do not map the FOI's issued-looking column to `ceiling_usage.issued`** — it
+is *prior-year grants in other subclasses*, a different quantity. A genuine
+issued-to-date must be derived from BP0068 (source 21).
+
+This page was the `source_url` on two seeded `ceiling_usage` rows whose values
+it does not contain. Those rows were removed
+(`fix: remove unsourced ceiling_usage seed rows`); the seed file is now
+comment-only and documents the three conditions for repopulating it.
 
 ---
 
@@ -87,15 +201,25 @@ each release. Curate from the page + its latest PDF rather than scraping.
 | Field | Value |
 |---|---|
 | URL | `https://immi.homeaffairs.gov.au/visas/getting-a-visa/fees-and-charges` |
-| Content type | HTML (fee tables / fee-calculator surface) |
-| Cadence | Irregular (annual indexation, 1 July) |
-| Tier | 2 (deterministic HTML) |
-| Feeds | `visa_subclasses.base_application_cost` (update-by-PK, not insert) |
-| Status | **CONFIRMED** (200) |
+| API | `POST https://immi.homeaffairs.gov.au/_layouts/15/api/data.aspx/GetPriceList` |
+| Content type | **JSON API** (undocumented but live) |
+| Retrieval | POST to the endpoint; returns **150 records** directly as JSON |
+| Cadence | Annual indexation (1 July) |
+| Tier | 2 (deterministic — no HTML parsing at all) |
+| Feeds | `visa_subclasses.base_application_cost`; see F6 — promote to its own table |
+| Status | **VERIFIED** — 150 records returned |
 
-Notes: **`/visa-fees` (the URL in `docs/data-sources.md`) returns 404.** The
-live page is the one above. Confirm the exact fee-table markup at build time —
-the page may be JS-augmented.
+Notes: **`/visa-fees` (the URL in `docs/data-sources.md`) returns 404.** Better
+than the catalog assumed: the page is backed by a hidden JSON API that returns
+all 150 fee records without any HTML parsing. Prefer the API over the page.
+
+Two schema consequences:
+
+- 150 fee records vs `visa_subclasses`' 6 rows — the fee data is a **superset**
+  of koshi's subclass table and supplies `visaSubclassCode`/`visaSubclassText`
+  pairs useful for widening it (source 5 gap, F10).
+- Fees vary by **stream**, which koshi has no dimension for, making
+  `base_application_cost` ambiguous as a single scalar on `visa_subclasses`.
 
 ---
 
@@ -103,19 +227,26 @@ the page may be JS-augmented.
 
 | Field | Value |
 |---|---|
-| URL | `https://immi.homeaffairs.gov.au/visas/getting-a-visa/visa-listing/skilled-independent-189/points-tested` |
-| Content type | HTML prose + points table (SharePoint page; table may be JS-rendered) |
+| URL | `https://immi.homeaffairs.gov.au/visas/getting-a-visa/visa-listing/skilled-independent-189/points-table` |
+| Content type | **hidden-field JSON** (static — not JS-rendered) |
+| Retrieval | Hidden-input decode, root key `content` |
 | Cadence | Rare (points test changes only on major policy reform) |
-| Tier | 2 (deterministic HTML) — flagged: confirm table is in static HTML vs. JS |
+| Tier | 2 (deterministic) |
 | Feeds | `points_criteria_reference` — criterion_name, band_description, points_value |
-| Status | **CONFIRMED** (200) |
+| Status | **VERIFIED** — points table decoded |
 
-Notes: **`/visas/working-in-australia/skillselect/points-test` (the URL in
-`docs/data-sources.md`) returns 404.** The live points-tested stream page for
-subclass 189 is the canonical points-criteria location. **Flag:** the page is a
-SharePoint SPA and the raw HTML does not contain the numeric points table — it
-may be loaded client-side. This contradicts the "clean deterministic HTML"
-assumption and should be re-verified before committing to pure tier 2.
+Notes: **The catalogued URL was wrong.** `/points-tested` genuinely contains no
+points table — but not because of JS rendering. The table lives at the **sibling
+URL `/points-table`** shown above, as plain static content behind the standard
+hidden-field decode.
+
+**This refutes the "SharePoint SPA / may need Playwright" flag**, which was the
+main justification for keeping a headless browser in the stack. No koshi source
+requires JS rendering. `points_criteria_reference` is buildable today.
+
+Scope note: points are a **single GSM test** specified in *Migration Regulations
+1994* Schedule 6D — one table covering 189/190/491, not a per-subclass table.
+There is no separate 190 or 491 points page to find.
 
 ---
 
@@ -157,14 +288,21 @@ Three individual page URLs.
 
 | Field | Value |
 |---|---|
+| Content type | **hidden-field JSON**, prose blocks — **zero tables on all three** |
+| Retrieval | Hidden-input decode, root key `content` |
 | Cadence | Rare (near-static reference prose) |
 | Tier | 5 (manual YAML seed) — 3 rows |
-| Feeds | `eligibility_requirements` — requirement_type (health/character/english_language), summary |
-| Status | **CONFIRMED** (all three) |
+| Feeds | `eligibility_requirements` — requirement_type, summary |
+| Status | **VERIFIED** — live, prose only |
 
 Notes: The `docs/data-sources.md` template URL
 `immi.homeaffairs.gov.au/help-support/meeting-our-requirements/{health,character,english-language}`
-resolves exactly as written — all three live.
+resolves exactly as written — all three live. `eligibility_requirements` is
+buildable today from the decoded prose.
+
+⚠ **The English page is prose only and cannot feed `english_test_bands`.** It
+carries no test-score table. That table must come from legislation instead —
+source 22.
 
 ---
 
@@ -173,14 +311,30 @@ resolves exactly as written — all three live.
 | Field | Value |
 |---|---|
 | URL | `https://immi.homeaffairs.gov.au/visas/getting-a-visa/visa-processing-times/global-visa-processing-times` |
-| Content type | HTML table (visa × median processing days, updated monthly) |
+| API | `GetProcessGuideVisas` (subclass list) → `GetProcessGuideInfo` (per combo) |
+| Content type | **JSON API** |
+| Retrieval | Two-call API; **76 subclass × stream combinations** |
 | Cadence | ~monthly |
-| Tier | 2 (deterministic HTML — same shape as SkillSelect parser) |
-| Feeds | `processing_times` — median_days, as_of_date |
-| Status | **CONFIRMED** (200) |
+| Tier | 2 (deterministic — no HTML parsing) |
+| Feeds | `processing_times` |
+| Status | **VERIFIED** — 76 combos enumerated |
 
 Notes: Redirects from the older `/visas/getting-a-visa/visa-processing-times/...`
 path — record the effective URL shown above.
+
+**Two schema-breaking findings:**
+
+1. **There is no median.** The API returns a **percentile distribution**, not a
+   single figure. `processing_times.median_days` has no corresponding source
+   field and must be re-modelled (F1).
+2. **The stream dimension is missing.** Results are keyed by subclass **and
+   stream** (76 combos across far fewer subclasses). `processing_times`' unique
+   constraint has no stream column, so multi-stream subclasses — **485, 500,
+   482, 186** — collide outright. This is a hard constraint violation, not a
+   fidelity concern.
+
+`as_of_date` is not in the API payload; the page states the calculation window
+and update rule in prose only.
 
 ---
 
@@ -198,20 +352,43 @@ related instruments are:
 
 | Field | Value |
 |---|---|
+| Content type | **epub HTML tables**, one iframe-hop from the register page |
+| Retrieval | Follow the iframe to the static epub doc → **12 tables, no id/class — positional access only** |
 | Cadence | A few times per year (amendments re-specify list membership) |
-| Tier | 2 (deterministic HTML) — **flag:** confirm legislation.gov.au's real HTML structure at build time (§13 open question #1) |
-| Feeds | `list_change_log` — list_name (MLTSSL/STSOL/ROL), occupation_code, change_type, effective_date |
-| Status | **CONFIRMED** (all three) |
+| Tier | 2 (deterministic) |
+| Feeds | `occupation_assessing_bodies`, `assessing_bodies`, list membership, `list_change_log` |
+| Status | **VERIFIED** — tables located and row-counted |
 
-Notes: **Research method** — searched the Federal Register of Legislation
-(`legislation.gov.au/search`) for "Specification of Occupations and Assessing
-Authorities". The only currently **"In force"** general-purpose occupation-list
-instrument is LIN 19/051 (F2019L00278, effective 28/03/2026); the earlier
-IMMI 17/072, IMMI 18/007, IMMI 18/051, etc. are all "No longer in force". The
-Subclass 186 instrument (F2024L01618) and the ANZSCO Definition instrument
-(F2024L01616) are the companion specifications. `list_change_log` membership
-must be diffed between instrument versions — the register serves versioned
-compilations, not a raw change log.
+Notes: **Research method** — searched the Federal Register of Legislation for
+"Specification of Occupations and Assessing Authorities". The only currently
+**"In force"** general-purpose occupation-list instrument is LIN 19/051
+(F2019L00278, current compilation 2026-03-28); IMMI 17/072, IMMI 18/007,
+IMMI 18/051 etc. are all "No longer in force".
+
+**The real content is one iframe-hop away.** The register page is a shell; the
+instrument body is a static epub HTML document containing **12 tables with no
+`id` or `class` attributes** — they must be addressed **positionally**, which
+makes table order a breaking-change risk worth asserting on.
+
+Verified table contents:
+
+| Table | Rows | Content |
+|---|---|---|
+| **5** | **504** | occupation → assessing-authority join |
+| **6** | **38** | assessing-body name key |
+| 7–11 | — | amendment history (**not opened** — may supply `effective_date`) |
+
+This is the correct authority for `assessing_bodies` — **not MARA** (source 13).
+
+Companion instruments:
+
+- **`F2024L01618`** (Subclass 186 / CSOL) — coded on ANZSCO **2022**, 100% match.
+- **`F2024L01616`** (ANZSCO Definition) — **contains zero tables.** It is purely
+  definitional and pins migration to the ANZSCO **2013** edition. Useful as the
+  edition pin; useless as a data source. LIN 19/051 is likewise on 2013, and
+  **25 of its codes are absent from ANZSCO 2022**.
+
+For version history, prefer the **OData API** (source 23) over scraping.
 
 ---
 
@@ -219,19 +396,36 @@ compilations, not a raw change log.
 
 | Field | Value |
 |---|---|
-| URL | `https://www.jobsandskills.gov.au/skills-priority-list` |
-| Content type | HTML + downloadable dataset (redirects to the Occupation Shortage List) |
+| URL | `https://www.jobsandskills.gov.au/data/occupation-shortage/occupation-shortage-list` |
+| Content type | JSON (`splData` / `splSearch`) embedded in the page |
+| Retrieval | Parse the embedded JSON payload |
 | Cadence | Annual (refreshed each year) |
-| Tier | 2 (BS4/lxml, or `pandas`/`openpyxl` if a downloadable dataset is offered) |
-| Feeds | `skills_priority_ratings` — shortage_rating, future_demand_rating, as_of_date |
-| Status | **CONFIRMED** (200 → redirect) |
+| Tier | 2 (deterministic) |
+| Feeds | `skills_priority_ratings` — shortage_rating, as_of_date |
+| Status | **VERIFIED** — payload and vocabulary confirmed |
 
-Notes: **Redirects** to
-`https://www.jobsandskills.gov.au/data/occupation-shortage/occupation-shortage-list`
-(the "Skills Priority List" was rebranded "Occupation Shortage List"). Record
-the effective URL. **Flag:** confirm JSA's exact rating vocabulary
-(shortage rating / future demand) against the live page before committing to
-`skills_priority_ratings` schema (§13 open question #2).
+Notes: **Redirects** from `/skills-priority-list` (the "Skills Priority List"
+was rebranded "Occupation Shortage List"). Record the effective URL above.
+
+**Rating vocabulary resolved** (§13 open question #2 — closed). From JSA's own
+methodology PDF, there are exactly **four** classifications:
+
+| Code | Meaning |
+|---|---|
+| `S` | Shortage |
+| `M` | Metropolitan shortage |
+| `R` | Regional shortage |
+| `NS` | No shortage |
+
+`Ns` seen in the payload is a **casing bug**, not a fifth value. The CHECK
+constraint should be exactly these four, compared case-insensitively.
+
+**`future_demand_rating` has no source** — the `d` field in `splData` is null
+throughout. Ship NULL or drop the column.
+
+JSA publishes ratings against **both ANZSCO and OSCA**, and mixes 4-digit and
+6-digit codes — so this source alone requires the edition and grain columns from
+source 1's note.
 
 ---
 
@@ -258,11 +452,26 @@ Five per-state page URLs.
 Notes: **VIC** is served behind Cloudflare bot detection —
 `liveinmelbourne.vic.gov.au` returns 403 to both curl (datacenter IP) and a
 headless browser ("Performing security verification" challenge). The page
-exists (it is Victoria's skilled-migration landing page) but its 200 status
-could not be confirmed from this environment; treat as PROPOSED and re-verify
+exists but its content could not be confirmed; treat as PROPOSED and re-verify
 from a residential IP or a human browser. NSW's precise sub-pages
 (`/skilled-nominated-visa-subclass-190`, `/skilled-work-regional-visa-subclass-491`)
 are also **CONFIRMED** (200) and are the correct per-subclass targets.
+
+**Audit corrections:**
+
+- **None of the columns this source is supposed to feed were found on any state
+  page.** Fees, minimum points, job-offer requirement, decision-time estimates
+  and document checklists are absent across NSW/VIC/QLD/WA/SA, and **no
+  aggregated source exists**. Most of `state_nomination_status` therefore has no
+  source at all — the table needs re-graining (F11) or most columns ship NULL.
+- **NSW joins at 4-digit unit groups**, QLD at 6-digit. The FK to
+  `occupations.code` cannot assume one width.
+- **SA is legitimately empty** — the program is between intake rounds, not
+  broken. koshi must distinguish "closed" from "scrape failed", or SA will look
+  like a recurring pipeline error.
+- **WA's list returns 0 by default** — the Views search form shows
+  "Displaying 0 occupation(s)" until queried, and the catalogued
+  `#2025-26-eligible-occupations` anchor **does not exist** on the page.
 
 ---
 
@@ -293,22 +502,36 @@ VIC's occupation list lives under the Cloudflare-blocked `liveinmelbourne.vic.go
 
 | Field | Value |
 |---|---|
-| URL | `https://portal.mara.gov.au/search-the-register-of-migration-agents/` |
-| Content type | HTML (searchable register) |
+| URL | **`https://www.legislation.gov.au/F2019L00278/latest`** (epub Tables 5 & 6) |
+| Content type | epub HTML tables — see source 9 |
+| Retrieval | iframe-hop → positional table access: **Table 6** = 38 bodies, **Table 5** = 504-row join |
 | Cadence | Rare (bodies change infrequently) |
-| Tier | 5 (manual YAML seed) |
-| Feeds | `assessing_bodies` — body_name, turnaround_estimate, cost; `occupation_assessing_bodies` — join |
-| Status | **CONFIRMED** (200) |
+| Tier | 2 (deterministic) — was catalogued tier 5 |
+| Feeds | `assessing_bodies` — body_name; `occupation_assessing_bodies` — join |
+| Status | **VERIFIED** — replaces MARA |
 
-Notes: **Correctness flag (important).** The docs (`docs/data-sources.md`,
-canonical §4) name `mara.gov.au` as the assessing-bodies source, but MARA
+~~`https://portal.mara.gov.au/search-the-register-of-migration-agents/`~~ —
+**wrong authority, do not use.**
+
+Notes: **The correctness flag raised here is confirmed and now resolved.** MARA
 (Office of the Migration Agents Registration Authority) registers **migration
-agents**, *not* **skills assessing authorities** (Engineers Australia, ACS,
-VETASSESS, CPA, ANMAC, etc.). The authoritative source for which body assesses
-which occupation is **LIN 19/051 itself** (`F2019L00278` — it specifies the
-"Relevant Assessing Authorities" alongside the occupation lists), plus each
-body's own site. The MARA register URL above is the closest live `mara.gov.au`
-page, but it is the wrong source for `assessing_bodies`; see GAPS.
+agents**, not **skills assessing authorities** (Engineers Australia, ACS,
+VETASSESS, CPA, ANMAC, …). The authoritative source is **LIN 19/051**, which
+specifies "Relevant Assessing Authorities" alongside the occupation lists, and
+it supplies the real data: 38 bodies and a 504-row occupation→authority join.
+
+**Two mapping hazards found in that data:**
+
+1. **Table 5 names bodies by abbreviation; Table 6 keys them by full name.** The
+   FK between the join table and `assessing_bodies` does not match on a raw
+   string compare — an explicit abbreviation↔name mapping is required.
+2. **Some occupations list "either body"** — a disjunction. A plain
+   `(occupation, body)` join row cannot express "either A or B", and silently
+   flattening it would misstate the requirement.
+
+**`turnaround_estimate` and `cost` have no source.** No aggregated publication
+exists; the data lives on each of the ~38 bodies' own sites. Ship NULL rather
+than curate 38 separate scrapers.
 
 ---
 
@@ -316,12 +539,21 @@ page, but it is the wrong source for `assessing_bodies`; see GAPS.
 
 | Field | Value |
 |---|---|
-| URL | `https://budget.gov.au/content/migration.htm` (primary) |
+| URL | ~~`https://budget.gov.au/content/migration.htm`~~ → use **Budget Paper No. 3** |
 | Content type | HTML / PDF budget papers (migration program) |
 | Cadence | Ad hoc (Budget annually; ministerial releases on policy change) |
 | Tier | 5 (manual YAML seed — explicitly editorial) |
 | Feeds | `policy_events` — event_date, visa_code (nullable), description |
-| Status | **CONFIRMED** (200) |
+| Status | **DEAD (soft-404)** — replacement is partial |
+
+⚠ **`budget.gov.au/content/migration.htm` is a soft-404**: it returns **HTTP 200**
+with a "Page not found" body, after the 2026-27 budget site restructure. A
+status-code-only health check passes it silently — koshi's fetcher must assert
+on body content, not just status (see the architecture doc's fault-tolerance
+section).
+
+Budget migration numbers now live in **Budget Paper No. 3**. Ministerial media
+releases have **no machine-readable index** — this source stays editorial.
 
 Companion URLs:
 
@@ -350,11 +582,17 @@ stable "all events" URL to scrape — this source is editorial by design.
 | Feeds | `application_funnel` — submitted_count, invited_count |
 | Status | **CONFIRMED** (200) |
 
-Notes: Identical URL to source 2. `submitted_count` (EOIs lodged) may not be
-published per-round on this page — verify whether it is derivable at all before
-assuming it is; if absent, launch `submitted_count = NULL` rather than invent
-it. The canonical doc's §7.3 open question #7 (multi-table `SourceSpec`) applies
-here.
+Notes: Identical URL to source 2 — piggyback the same fetch and decode.
+
+**`submitted_count` is not published anywhere.** Resolved, not merely
+suspected: the entire decoded SkillSelect page was searched for `submitted`,
+`lodged`, `EOIs on hand`, `EOIs in the system` and `pool` — **zero matches** —
+and data.gov.au carries 12 Home Affairs datasets, none of them a SkillSelect/EOI
+dataset. **Ship `submitted_count = NULL` permanently**, and record it as
+unavailable rather than pending.
+
+`invited_count` **is** available, from decoded Tables A and C — but at
+round/subclass grain, not per occupation.
 
 ---
 
@@ -362,37 +600,256 @@ here.
 
 | Field | Value |
 |---|---|
-| URL | `https://www.homeaffairs.gov.au/reports-and-publications/reports/annual-reports` |
-| Content type | HTML index linking to annual-report **PDFs** (aggregate visa grants) |
+| URL | **`https://data.gov.au/data/dataset/permanent-migration-program-skilled-family`** (BP0068) |
+| Content type | **XLSX pivot cache** — see source 21 for the full entry |
 | Cadence | Annual |
-| Tier | 5 (manual YAML seed — or launch `NULL` until a human confirms a real number) |
-| Feeds | `application_funnel.granted_count` (second nullable provenance triple) |
-| Status | **CONFIRMED** (200, index page) |
+| Tier | 2 (deterministic, structured file) — was tier 5 |
+| Feeds | `application_funnel.granted_count` |
+| Status | **VERIFIED** — 622,425 records parsed |
 
-Notes: This is the annual-report *index* — the specific PDF and page containing
-a pathway-level grant breakdown changes each year and must be located at
-curation time. The canonical doc marks this the **weakest-sourced field**: if
-no pathway-level breakdown is published, ship `NULL` rather than approximate.
-`/reports-and-pubs/annual-reports` and the access-and-accountability path both
-404 — the correct index is the URL above.
+~~`https://www.homeaffairs.gov.au/reports-and-publications/reports/annual-reports`~~
+— 44 report PDFs, none opened, and now unnecessary.
+
+Notes: The canonical doc marked `granted_count` the **weakest-sourced field**,
+to be shipped NULL if no pathway-level breakdown existed. **A far better source
+exists**: Home Affairs publishes BP0068 on data.gov.au under CC-BY, with
+per-subclass, per-occupation, per-program-year grant counts.
+
+`granted_count` moves from "probably NULL" to **fully sourced**. Full retrieval
+details in source 21 — note the data is in the workbook's **pivot cache**, not
+its worksheets.
+
+---
+
+## New sources added by the 2026-08-17 audit
+
+Sources 17–23 were not in the original catalog. All are content-verified.
+
+---
+
+## 17. SkillSelect previous rounds (invitation history)
+
+| Field | Value |
+|---|---|
+| URL | `https://immi.homeaffairs.gov.au/visas/working-in-australia/skillselect/previous-rounds` |
+| Content type | **hidden-field JSON** |
+| Retrieval | Hidden-input decode, root key **`criteria`** — *not* `content` |
+| Cadence | ~monthly (appended per round) |
+| Tier | 2 (deterministic) |
+| Feeds | `eoi_rounds` — historical backfill |
+| Status | **VERIFIED** — 19 rounds, 1,419 rows |
+
+Notes: Supplies **19 rounds of history** where source 2 gives only the current
+one — the difference between a point reading and a trend.
+
+⚠ **This page uses a different JSON root key (`criteria`) from every other Home
+Affairs page (`content`).** A parser hard-coding `content` raises `KeyError`
+here. This is why the root key must be stored per resource in
+`extraction_strategies`, not assumed globally. Independently re-verified
+2026-08-18.
+
+---
+
+## 18. ABS ANZSCO structure workbook
+
+| Field | Value |
+|---|---|
+| URL | ABS ANZSCO release — `anzsco 2022 structure 062023.xlsx` |
+| Content type | XLSX |
+| Retrieval | **Table 6** — 1,425 code/title pairs |
+| Cadence | Per ANZSCO edition (rare) |
+| Tier | 2 (deterministic, structured file) |
+| Feeds | `occupations` — code, name; the crosswalk in source 20 |
+| Status | **VERIFIED** — 1,425 pairs |
+
+Notes: The authoritative ANZSCO code↔title list. Resolves **132 of 140** live
+SkillSelect occupation names on its own — see source 20 for why that is not
+sufficient alone.
+
+---
+
+## 19. ABS ANZSCO ↔ OSCA correspondence
+
+| Field | Value |
+|---|---|
+| URL | ABS — `OSCA correspondence tables v2.xlsx` |
+| Content type | XLSX (10 tables) |
+| Retrieval | Includes **ANZSCO v1.3 → OSCA** and **ANZSCO 2022 → OSCA**, with a `p` partial-match flag |
+| Cadence | Per edition |
+| Tier | 2 (deterministic, structured file) |
+| Feeds | new `anzsco_osca_crosswalk` table |
+| Status | **VERIFIED** |
+
+Notes: The migration path for the ANZSCO→OSCA retirement (source 1). The `p`
+flag marks partial matches — the mapping is **not** one-to-one, so a naive join
+silently drops or duplicates occupations. Carrying this crosswalk is what makes
+keeping ANZSCO as the PK viable.
+
+---
+
+## 20. Occupation name → code crosswalk (composite)
+
+| Field | Value |
+|---|---|
+| URL | Union of source 18 (ABS Table 6) and source 9 (LIN 19/051 Table 5) |
+| Content type | derived |
+| Retrieval | **LIN-first**, then ABS fallback |
+| Cadence | Per edition |
+| Tier | derived |
+| Feeds | `eoi_rounds.occupation_code` — unblocks the Occupation vertical |
+| Status | **VERIFIED** — union resolves **140/140** |
+
+Notes: This entry exists because **neither source alone is sufficient**, which
+was established by measurement rather than assumption:
+
+| Source | Pairs | Resolves |
+|---|---|---|
+| ABS Table 6 (source 18) | 1,425 | 132/140 |
+| LIN 19/051 Table 5 (source 9) | 504 | 132/140 |
+| **Union** | — | **140/140** |
+
+Two hazards:
+
+- **8 names are LIN-only** — an ABS-only implementation silently drops them.
+- **3 titles resolve to *different codes* in the two sources**: **Management
+  Consultant**, **Plumber (General)**, **Statistician**. Lookup order is
+  therefore **LIN-first**, because LIN 19/051 is the binding instrument. An
+  ABS-first implementation produces wrong codes for these three without erroring.
+
+---
+
+## 21. BP0068 — permanent migration program outcomes
+
+| Field | Value |
+|---|---|
+| URL | `https://data.gov.au/data/dataset/permanent-migration-program-skilled-family` |
+| API | `https://data.gov.au/data/api/3/action/package_show?id=permanent-migration-program-skilled-family` |
+| Content type | **XLSX pivot cache** (5,237,461 bytes; ~119 MB uncompressed) |
+| Retrieval | ⚠ **Data is in the pivot cache, not the worksheets** — pandas/openpyxl return nothing useful. A stdlib XML reader parses all records in ~4.8s |
+| Cadence | Annual |
+| Tier | 2 (deterministic, structured file) |
+| Feeds | `application_funnel.granted_count`; `visa_subclasses` taxonomy; `ceiling_usage.issued` if re-sourced |
+| Status | **VERIFIED** — 622,425 records; licence **CC-BY 2.5**; byte size independently re-confirmed 2026-08-18 |
+
+Notes: **The single largest addition this audit makes.** Home Affairs-published,
+CC-BY, annually refreshed:
+
+- **622,425 records** · **10 program years** · **62 visa subclasses** ·
+  **764 ANZSCO-coded occupations** · 18 fields
+- Skilled subclasses present: 186, 189, 190, 491, 494, 858, 888
+- Carries a 5-level **Program → Category → Type → Sub-type → Subclass**
+  hierarchy — the visa taxonomy `visa_subclasses` lacks
+
+Found by following a citation inside the FOI ceilings PDF; three CKAN searches
+had missed it. The dataset ships a "pivot table user guide" PDF, corroborating
+the pivot-cache access route.
+
+Caveat: its 62 subclasses are only those **with grants**, so it is not a
+complete subclass registry.
+
+---
+
+## 22. English language test bands (legislative instruments)
+
+| Field | Value |
+|---|---|
+| URL | `https://www.legislation.gov.au/F2025L00905` (LIN 25/016) · `https://www.legislation.gov.au/F2025L00904` |
+| Content type | epub HTML tables |
+| Retrieval | `F2025L00905` Schedule 2 — **4 bands × 9 tests × 4 skills**; `F2025L00904` — Functional English, 8 tests |
+| Cadence | Rare (instrument amendment) |
+| Tier | 2 (deterministic) |
+| Feeds | `english_test_bands` — test_name, band_level, score_requirement |
+| Status | **VERIFIED** — full matrix transcribed |
+
+Notes: Replaces the Home Affairs English page (source 7), which has no tables.
+Covers Vocational / Competent / Proficient / Superior in `F2025L00905`, with
+Functional English specified separately in `F2025L00904`.
+
+⚠ **Parser hazard:** Schedule 2's table uses **12 `rowspan` attributes**. Naive
+`td`-indexing misaligns the Superior rows — the parser must track rowspan state
+or it will silently attribute the wrong scores to the wrong band.
+
+---
+
+## 23. legislation.gov.au OData API (compilation history)
+
+| Field | Value |
+|---|---|
+| URL | OData register-item API on `/F2019L00278/latest` |
+| Content type | JSON |
+| Retrieval | Register-item JSON enumerates every compilation with dates + amendment reasons |
+| Cadence | Per amendment |
+| Tier | 2 (deterministic) |
+| Feeds | `list_change_log.effective_date`, `change_type` |
+| Status | **VERIFIED** — 7-version history retrieved |
+
+Notes: Closes the "register serves compilations, not diffs" gap. The API hands
+over LIN 19/051's **full 7-version compilation history with effective dates and
+amendment reasons**, so `list_change_log.effective_date` — which Agent 2 found
+had **no source**, meaning a cold start produced zero rows — becomes sourceable.
+Diff membership between successive compilations to synthesise change rows.
 
 ---
 
 ## GAPS — sources still missing a confirmed or sufficient URL
 
-| # | Source | Gap | Recommendation |
-|---|---|---|---|
-| 5 | Points test criteria | URL is **confirmed live** but the points *table* is not in the static HTML — the page is a SharePoint SPA and the numeric points data appears JS-rendered. "Tier 2 deterministic HTML" may not hold. | Re-verify by inspecting the rendered DOM (Playwright or browser) before building the parser; if JS-rendered, either pin a Playwright fetch or fall back to tier 5 curation of `points_criteria_reference`. |
-| 9 | MLTSSL/STSOL/ROL | `list_change_log` needs *change* events; legislation.gov.au serves versioned compilations, not a diff. The real HTML structure is unverified (§13 open question #1). | Inspect `F2019L00278/latest`'s DOM to confirm the schedule table is parseable; build a version-diff over successive instrument compilations (or curate the diff manually). |
-| 10 | Skills priority list | JSA rating vocabulary unconfirmed; the page redirects to the rebranded "Occupation Shortage List". | Confirm `shortage_rating`/`future_demand_rating` vocabulary against the live page before finalising `skills_priority_ratings`. |
-| 11/12 | **VIC** state nomination + occupation list | **PROPOSED only.** `liveinmelbourne.vic.gov.au` returns 403 (Cloudflare bot challenge) to both curl and headless browser from this environment. | Re-verify from a residential IP / human browser; add VIC's Cloudflare domain to any crawler allowlist, or curate VIC state data from a human-checked snapshot. Until then, VIC rows cannot carry a confirmed `source_url`. |
-| 13 | Assessing bodies | **Source mismatch.** `mara.gov.au` registers *migration agents*, not *skills assessing authorities*. The MARA register URL is live but semantically wrong for `assessing_bodies`. | Point `assessing_bodies`/`occupation_assessing_bodies` provenance at **LIN 19/051 (F2019L00278)** — the instrument that actually specifies "Relevant Assessing Authorities" — plus each body's own site. Correct `docs/data-sources.md` accordingly. |
-| 14 | Policy events | No single stable "events" URL exists; `budget.gov.au/content/migration.htm` is an annual index, ministerial releases are per-URL. | Treat as editorial (tier 5): curate per-event with a link to the specific press release / budget paper; the three index URLs (budget migration page, `treasury.gov.au`, `minister.homeaffairs.gov.au`) are the stable anchors. |
-| 15 | Funnel submitted/invited | `submitted_count` may not be published per-round on the SkillSelect page. | Verify the round page's columns at build time; if EOI-lodgement counts aren't there, ship `submitted_count = NULL`. |
-| 16 | Funnel granted | Only an index URL is confirmed; the specific annual-report PDF and the pathway-level grant table change each year. | Locate the current year's PDF at curation time; if no pathway breakdown is published, ship `granted_count = NULL` (canonical doc's explicit fallback). |
+Most of the original gaps are **closed**. What remains is recorded honestly as
+either *unpublished* (stop looking), *inaccessible* (a network problem, not a
+data problem), or *unreached* (real work left).
+
+### Closed by the audit
+
+| # | Original gap | Resolution |
+|---|---|---|
+| 5 | Points table "may be JS-rendered" | **Closed.** Wrong URL, not JS. Real table at `/points-table`, static. No Playwright needed anywhere. |
+| 9 | Register serves compilations, not diffs | **Closed.** OData API (source 23) supplies the 7-version history with effective dates. |
+| 10 | JSA vocabulary unconfirmed | **Closed.** Exactly 4 values: `S`/`M`/`R`/`NS`. `Ns` is a casing bug. |
+| 13 | MARA is the wrong authority | **Closed.** Re-sourced to LIN 19/051 Tables 5 & 6. |
+| 15 | Is `submitted_count` published? | **Closed — it is not.** Ship NULL permanently. |
+| 16 | Which annual-report PDF? | **Closed.** Superseded by BP0068 (source 21) — better data, no PDF parsing. |
+
+### Genuinely unpublished — stop looking, ship NULL
+
+| Field / table | Finding |
+|---|---|
+| `ceiling_usage` (6-digit) | Not published. FOI-only, scanned images, 4-digit grain. |
+| `application_funnel.submitted_count` | Not published in any form. |
+| `assessing_bodies.turnaround_estimate`, `.cost` | No aggregated source; ~38 separate sites. |
+| `skills_priority_ratings.future_demand_rating` | JSA's `d` field is null throughout. |
+| `visa_subclasses.permanence` | Not published as structured data anywhere found. |
+| `state_nomination_status` — fees, points, job-offer, decision time, documents | Absent from every state page; no aggregated source. |
+
+### Inaccessible — a network problem, not a data problem
+
+| # | Source | Obstacle |
+|---|---|---|
+| 11/12 | **VIC** | `liveinmelbourne.vic.gov.au` 403s (Cloudflare) to curl **and** headless browser. Re-verify from a residential IP or curate from a human-checked snapshot. |
+| 11/12 | **WA** | Views form returns "Displaying 0 occupation(s)" until queried; catalogued anchor does not exist. Needs a documented query parameter or a downloadable list. |
+| 11/12 | **SA** | Not blocked — legitimately between intake rounds. Model as "closed", not "failed". |
+
+### Not reached — real work remaining
+
+- BP1 / BP2 datasets (siblings of BP0068).
+- `minister.homeaffairs.gov.au` — no machine-readable index found; still editorial.
+- ABS **EQ08** internals (Labour Force Detailed) — identified as the bulk
+  labour-market dataset and the Department's own stated ceiling input, but its
+  structure was not opened.
+- LIN 19/051 epub **tables 7–11** (amendment history) — may supply
+  `effective_date` directly, superseding the diff approach.
+- FOI release `fa-260100545` pages 3–5.
 
 ### Summary counts
 
-- **CONFIRMED URLs:** 23 (all Home Affairs pages, legislation.gov.au instruments, JSA, budget/treasury/ministerial, MARA register, 4 of 5 states, annual-report index).
-- **PROPOSED / unverifiable:** VIC (Cloudflare 403) — affects sources 11 and 12.
-- **Correctness flags (URL live but source mismatched or insufficient):** 5 (JS-rendered table), 9 (diff not served), 13 (mara.gov.au is the wrong authority), 14/15/16 (no single stable URL — editorial or nullable).
+| Metric | Count |
+|---|---|
+| Sources catalogued | **23** (was 16) |
+| **VERIFIED** (content fetched and decoded) | 19 |
+| **PROPOSED** (blocked at the network edge) | 1 — VIC |
+| **DEAD** (does not serve what was claimed) | 2 — occupation-ceilings (404), budget migration page (soft-404) |
+| Entries materially corrected | **9 of the original 16** |
+| Sources needing JS rendering / Playwright | **0** |
+
+**Correctness flags remaining:** LIN 19/051 tables are positional (no `id`/`class`)
+— assert on table order; `F2025L00905`'s rowspans break naive `td`-indexing;
+BP0068 needs pivot-cache access, not a worksheet read; and the Home Affairs JSON
+root key varies per page (`content` vs `criteria`).
