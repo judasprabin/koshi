@@ -24,6 +24,7 @@ def _seed_rounds(db_session, code, thresholds):
             EoiRound(
                 visa_code="189",
                 occupation_code=code,
+                occupation_name_raw=code,
                 round_date=base_date + dt.timedelta(days=30 * i),
                 threshold_points=points,
                 invitations_issued=100,

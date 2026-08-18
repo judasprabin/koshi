@@ -1,4 +1,6 @@
 import datetime as dt
+import html as html_module
+import json
 
 import httpx
 import pytest
@@ -22,53 +24,72 @@ ANZSCO_FIXTURE = b"""
 </table>
 """
 
-ROUNDS_FIXTURE = b"""
-<p>Round date: 24 July 2026</p>
-<table id="round-results">
-  <thead><tr><th>Occupation</th><th>Points Threshold</th><th>Invitations Issued</th></tr></thead>
-  <tbody>
-    <tr><td>261313</td><td>85</td><td>120</td></tr>
-  </tbody>
-</table>
-"""
+# SkillSelect fixtures are built to the *real* page structure: content is
+# entity-encoded JSON inside a hidden input, the occupation table has two
+# columns and no <th>, and it is found via its preceding heading. The old
+# fixtures here were a synthetic three-column `id="round-results"` table
+# that exists nowhere on the live site — which is exactly how the parser
+# passed its tests for weeks while extracting zero rows in production.
+#
+# MIN_OCCUPATION_ROWS guards against a collapsed table, so these fixtures
+# must clear it; _rounds_page pads with filler occupations to do so.
+def _rounds_page(
+    occupations: list[tuple[str, int]],
+    *,
+    round_date: str = "24 July 2026",
+    build_stamp: str = "",
+    include_round_heading: bool = True,
+) -> bytes:
+    rows = "".join(
+        f"<tr><td><p>{name}</p></td><td><p>{points}</p></td></tr>"
+        for name, points in occupations
+    )
+    summary = (
+        f"<h3>Invitations issued on {round_date}</h3>"
+        "<table><thead><tr><th>Visa subclass</th><th>Total EOIs Invited</th>"
+        "<th>Tie break date</th></tr></thead>"
+        "<tbody><tr><td><p>Skilled Independent visa (subclass 189)</p></td>"
+        "<td><p>10,000</p></td><td><p>24/04/2026</p></td></tr></tbody></table>"
+        if include_round_heading
+        else ""
+    )
+    block = (
+        f"{build_stamp}{summary}"
+        "<h3>Invitations issued by occupation and minimum score invited</h3>"
+        f"<table><tbody>{rows}</tbody></table>"
+    )
+    payload = json.dumps({"content": [{"id": "1", "text": "", "block": block}]})
+    return (
+        '<html><body><input type="hidden" '
+        'id="ctl00_PlaceHolderMain_PageSchemaHiddenField_Input" value="'
+        + html_module.escape(payload, quote=True)
+        + '"></body></html>'
+    ).encode()
 
-# Same round data as ROUNDS_FIXTURE, but different page bytes (a build
-# stamp) — this changes the source_pages content_hash so `changed` is True
-# again, even though the underlying round is identical.
-ROUNDS_FIXTURE_REPUBLISHED = b"""
-<!-- build 20260725-002 -->
-<p>Round date: 24 July 2026</p>
-<table id="round-results">
-  <thead><tr><th>Occupation</th><th>Points Threshold</th><th>Invitations Issued</th></tr></thead>
-  <tbody>
-    <tr><td>261313</td><td>85</td><td>120</td></tr>
-  </tbody>
-</table>
-"""
 
-# No "Round date: ..." text — parse_skillselect_rounds raises ValueError.
-BROKEN_ROUNDS_FIXTURE = b"""
-<table id="round-results">
-  <thead><tr><th>Occupation</th><th>Points Threshold</th><th>Invitations Issued</th></tr></thead>
-  <tbody>
-    <tr><td>261313</td><td>85</td><td>120</td></tr>
-  </tbody>
-</table>
-"""
+# 60 rows clears MIN_OCCUPATION_ROWS (50); the first is the one under test.
+_FILLER = [(f"Filler Occupation {i}", 60 + i % 20) for i in range(59)]
 
-# Same (visa_code, occupation_code, round_date) key appears twice within a
-# single page — a real possibility in messy government HTML tables — to
-# reproduce the in-batch duplicate crash (Fix B).
-ROUNDS_FIXTURE_WITH_IN_BATCH_DUPLICATE = b"""
-<p>Round date: 24 July 2026</p>
-<table id="round-results">
-  <thead><tr><th>Occupation</th><th>Points Threshold</th><th>Invitations Issued</th></tr></thead>
-  <tbody>
-    <tr><td>261313</td><td>85</td><td>120</td></tr>
-    <tr><td>261313</td><td>85</td><td>120</td></tr>
-  </tbody>
-</table>
-"""
+ROUNDS_FIXTURE = _rounds_page([("Software Engineer", 85), *_FILLER])
+
+# Same round data, different page bytes (a build stamp) — changes the
+# source_pages content_hash so `changed` is True again, even though the
+# underlying round is identical.
+ROUNDS_FIXTURE_REPUBLISHED = _rounds_page(
+    [("Software Engineer", 85), *_FILLER], build_stamp="<!-- build 20260725-002 -->"
+)
+
+# No "Invitations issued on ..." heading — the parser raises.
+BROKEN_ROUNDS_FIXTURE = _rounds_page(
+    [("Software Engineer", 85), *_FILLER], include_round_heading=False
+)
+
+# The same (visa_code, occupation_name_raw, round_date) key appears twice
+# within a single page — a real possibility in messy government tables —
+# reproducing the in-batch duplicate crash (Fix B).
+ROUNDS_FIXTURE_WITH_IN_BATCH_DUPLICATE = _rounds_page(
+    [("Software Engineer", 85), ("Software Engineer", 85), *_FILLER]
+)
 
 
 def _client_returning(body: bytes) -> httpx.Client:
@@ -118,9 +139,21 @@ def test_sync_skillselect_rounds_persists_on_first_run(db_session):
 
     result = sync_skillselect_rounds(db_session, client=_client_returning(ROUNDS_FIXTURE))
 
-    assert len(result) == 1
-    found = db_session.query(EoiRound).filter_by(occupation_code="261313").one()
+    assert len(result) == 60
+    found = db_session.query(EoiRound).filter_by(occupation_name_raw="Software Engineer").one()
     assert found.threshold_points == 85
+    assert found.visa_code == "189"  # read from the page, not passed in
+    assert found.round_date == dt.date(2026, 7, 24)
+
+
+def test_sync_skillselect_rounds_leaves_occupation_code_null(db_session):
+    """SkillSelect gives names only. Until the crosswalk lands, the FK is
+    NULL — the pipeline must not invent a code to fill it."""
+    sync_anzsco_occupations(db_session, client=_client_returning(ANZSCO_FIXTURE))
+
+    rounds = sync_skillselect_rounds(db_session, client=_client_returning(ROUNDS_FIXTURE))
+
+    assert all(r.occupation_code is None for r in rounds)
 
 
 def test_sync_skillselect_rounds_dedups_when_page_hash_changes_but_round_is_identical(db_session):
@@ -128,7 +161,10 @@ def test_sync_skillselect_rounds_dedups_when_page_hash_changes_but_round_is_iden
     sync_skillselect_rounds(db_session, client=_client_returning(ROUNDS_FIXTURE))
 
     # Page content changed (new content_hash -> changed=True) but the
-    # round itself (visa_code, occupation_code, round_date) is identical.
+    # round itself (visa_code, occupation_name_raw, round_date) is
+    # identical. Dedup keys on the *name* precisely because occupation_code
+    # is NULL on every row, and Postgres treats NULLs as distinct — a
+    # code-keyed check would match nothing and re-insert all 60 rows.
     result = sync_skillselect_rounds(
         db_session, client=_client_returning(ROUNDS_FIXTURE_REPUBLISHED)
     )
@@ -136,7 +172,7 @@ def test_sync_skillselect_rounds_dedups_when_page_hash_changes_but_round_is_iden
     assert result == []  # no new rows were created
     rows = (
         db_session.query(EoiRound)
-        .filter_by(occupation_code="261313", round_date=dt.date(2026, 7, 24))
+        .filter_by(occupation_name_raw="Software Engineer", round_date=dt.date(2026, 7, 24))
         .all()
     )
     assert len(rows) == 1
@@ -169,7 +205,7 @@ def test_sync_retries_parse_after_a_previous_failure(db_session):
     # And once the page is republished with valid content, the retry
     # succeeds and the watermark finally advances.
     result = sync_skillselect_rounds(db_session, client=_client_returning(ROUNDS_FIXTURE))
-    assert len(result) == 1
+    assert len(result) == 60
     page = db_session.query(SourcePage).filter_by(url=SKILLSELECT_ROUNDS_URL).one()
     assert page.last_extracted_at is not None
 
@@ -187,10 +223,11 @@ def test_sync_skillselect_rounds_dedups_in_batch_duplicate_rows(db_session_no_au
         db_session_no_autoflush, client=_client_returning(ROUNDS_FIXTURE_WITH_IN_BATCH_DUPLICATE)
     )
 
-    assert len(result) == 1  # the in-batch duplicate was skipped, not crashed on
+    # 61 rows in the page (Software Engineer twice + 59 filler) -> 60 persisted.
+    assert len(result) == 60  # the in-batch duplicate was skipped, not crashed on
     rows = (
         db_session_no_autoflush.query(EoiRound)
-        .filter_by(occupation_code="261313", round_date=dt.date(2026, 7, 24))
+        .filter_by(occupation_name_raw="Software Engineer", round_date=dt.date(2026, 7, 24))
         .all()
     )
     assert len(rows) == 1  # exactly one row persisted — not zero, not two
@@ -219,6 +256,7 @@ def test_momentum_refresh_failure_for_one_code_does_not_block_the_other(db_sessi
             db_session.add(
                 EoiRound(
                     visa_code="189", occupation_code=code,
+                    occupation_name_raw=code,
                     round_date=base_date + dt.timedelta(days=30 * i),
                     threshold_points=points, invitations_issued=100,
                     source_url="https://immi.homeaffairs.gov.au/visas/working-in-australia/skillselect/invitation-rounds",
@@ -228,16 +266,19 @@ def test_momentum_refresh_failure_for_one_code_does_not_block_the_other(db_sessi
             )
     db_session.commit()
 
-    fixture = b"""
-    <p>Round date: 24 July 2026</p>
-    <table id="round-results">
-      <thead><tr><th>Occupation</th><th>Points Threshold</th><th>Invitations Issued</th></tr></thead>
-      <tbody>
-        <tr><td>261313</td><td>85</td><td>120</td></tr>
-        <tr><td>254499</td><td>80</td><td>90</td></tr>
-      </tbody>
-    </table>
-    """
+    # A third round each, completing compute_momentum's trailing-3 window.
+    for code, points in (("261313", 85), ("254499", 80)):
+        db_session.add(
+            EoiRound(
+                visa_code="189", occupation_code=code, occupation_name_raw=code,
+                round_date=dt.date(2026, 7, 24), threshold_points=points,
+                invitations_issued=120,
+                source_url="https://immi.homeaffairs.gov.au/visas/working-in-australia/skillselect/invitation-rounds",
+                retrieved_at=dt.datetime.now(dt.timezone.utc),
+                reliability_tier="official_scraped",
+            )
+        )
+    db_session.commit()
 
     original_refresh_momentum = pipeline_module.refresh_momentum
 
@@ -248,14 +289,11 @@ def test_momentum_refresh_failure_for_one_code_does_not_block_the_other(db_sessi
 
     monkeypatch.setattr(pipeline_module, "refresh_momentum", flaky_refresh)
 
-    def handler(request):
-        return httpx.Response(200, content=fixture)
-
-    result = pipeline_module.sync_skillselect_rounds(
-        db_session, client=httpx.Client(transport=httpx.MockTransport(handler))
-    )
-
-    assert len(result) == 2  # both rounds still persisted despite the momentum failure
+    # Driven directly rather than through sync_skillselect_rounds: scraped
+    # rounds carry occupation_code = NULL until the crosswalk lands, so the
+    # sync currently passes an empty set and this isolation would go
+    # untested. The behaviour under test is the loop's, not the sync's.
+    pipeline_module.refresh_momentum_for_codes(db_session, {"261313", "254499"})
 
     working_momentum = db_session.scalar(
         select(OccupationMomentum).where(OccupationMomentum.occupation_code == "254499")
@@ -305,6 +343,7 @@ def test_momentum_refresh_db_level_failure_does_not_cascade_to_the_next_code(
             session.add(
                 EoiRound(
                     visa_code="189", occupation_code=code,
+                    occupation_name_raw=code,
                     round_date=base_date + dt.timedelta(days=30 * i),
                     threshold_points=points, invitations_issued=100,
                     source_url="https://immi.homeaffairs.gov.au/visas/working-in-australia/skillselect/invitation-rounds",
@@ -314,21 +353,24 @@ def test_momentum_refresh_db_level_failure_does_not_cascade_to_the_next_code(
             )
     session.commit()
 
-    fixture = b"""
-    <p>Round date: 24 July 2026</p>
-    <table id="round-results">
-      <thead><tr><th>Occupation</th><th>Points Threshold</th><th>Invitations Issued</th></tr></thead>
-      <tbody>
-        <tr><td>261313</td><td>85</td><td>120</td></tr>
-        <tr><td>254499</td><td>85</td><td>120</td></tr>
-      </tbody>
-    </table>
-    """
+    # A third round each, completing compute_momentum's trailing-3 window.
+    for code in ("261313", "254499"):
+        session.add(
+            EoiRound(
+                visa_code="189", occupation_code=code, occupation_name_raw=code,
+                round_date=dt.date(2026, 7, 24), threshold_points=85,
+                invitations_issued=120,
+                source_url="https://immi.homeaffairs.gov.au/visas/working-in-australia/skillselect/invitation-rounds",
+                retrieved_at=dt.datetime.now(dt.timezone.utc),
+                reliability_tier="official_scraped",
+            )
+        )
+    session.commit()
 
     original_refresh_momentum = pipeline_module.refresh_momentum
-    # sync_skillselect_rounds derives new_codes as a Python set, so we
-    # can't know ahead of time which of the two codes the loop visits
-    # first — record the actual order live instead of hard-coding one.
+    # refresh_momentum_for_codes iterates a Python set, so we can't know
+    # ahead of time which of the two codes the loop visits first — record
+    # the actual order live instead of hard-coding one.
     processed_order: list[str] = []
 
     def flaky_refresh(session, code):
@@ -344,14 +386,10 @@ def test_momentum_refresh_db_level_failure_does_not_cascade_to_the_next_code(
 
     monkeypatch.setattr(pipeline_module, "refresh_momentum", flaky_refresh)
 
-    def handler(request):
-        return httpx.Response(200, content=fixture)
+    # Driven directly rather than through sync_skillselect_rounds — see the
+    # sibling test above for why.
+    pipeline_module.refresh_momentum_for_codes(session, {"261313", "254499"})
 
-    result = pipeline_module.sync_skillselect_rounds(
-        session, client=httpx.Client(transport=httpx.MockTransport(handler))
-    )
-
-    assert len(result) == 2  # both rounds persisted regardless of momentum outcome
     assert len(processed_order) == 2  # the loop attempted both codes, not just the first
     poisoned_code, recovered_code = processed_order
 

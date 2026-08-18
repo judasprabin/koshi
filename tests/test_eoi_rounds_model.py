@@ -18,6 +18,7 @@ def test_insert_and_read_eoi_round(db_session):
     round_row = EoiRound(
         visa_code="189",
         occupation_code="261313",
+        occupation_name_raw="261313",
         round_date=dt.date(2026, 7, 24),
         threshold_points=85,
         invitations_issued=120,

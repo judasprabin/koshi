@@ -84,75 +84,17 @@ def sync_anzsco_occupations(
     return rows
 
 
-def sync_skillselect_rounds(
-    session: Session,
-    *,
-    url: str = SKILLSELECT_ROUNDS_URL,
-    visa_code: str = "189",
-    client: httpx.Client | None = None,
-) -> list[EoiRound]:
-    page, _changed, text = fetch_and_register(
-        session, url=url, domain="immi.homeaffairs.gov.au", category="skillselect_rounds", client=client
-    )
-    if not _needs_extraction(page):
-        return []
+def refresh_momentum_for_codes(session: Session, codes: set[str]) -> None:
+    """Recompute momentum for each occupation code, isolated per code.
 
-    parse_result = parse_skillselect_rounds(
-        text,
-        visa_code=visa_code,
-        source_url=url,
-        retrieved_at=dt.datetime.now(dt.timezone.utc),
-    )
-    if parse_result.skipped:
-        logger.warning("skillselect_rounds: skipped %d malformed row(s)", parse_result.skipped)
+    Nothing else in the system calls refresh_momentum, so without this
+    `occupation_momentum` rows are never produced end-to-end and
+    GET /v1/occupations always shows momentum: null.
 
-    # Upsert by (visa_code, occupation_code, round_date): a whole-page hash
-    # change (build stamp, "last reviewed" date) re-parses the same round
-    # data and must not manufacture duplicate rows / fake momentum.
-    #
-    # The DB existence check alone isn't enough to dedup rows *within* this
-    # same batch: the production session (koshi.db.SessionLocal) sets
-    # autoflush=False, so an earlier session.add() in this loop is never
-    # flushed before the next iteration's SELECT runs. If a single scraped
-    # page contains two rows with an identical (visa_code, occupation_code,
-    # round_date) — plausible in messy government HTML tables — both would
-    # pass the "not found in DB" check, both would be queued, and the
-    # batch commit below would then raise an unhandled UniqueViolation,
-    # rolling back every valid new round from that page. Tracking keys
-    # already staged in this call closes that gap.
-    new_rounds = []
-    staged_keys: set[tuple[str, str | None, dt.date]] = set()
-    for round_ in parse_result.rows:
-        key = (round_.visa_code, round_.occupation_code, round_.round_date)
-        if key in staged_keys:
-            continue
-        existing = session.scalar(
-            select(EoiRound).where(
-                EoiRound.visa_code == round_.visa_code,
-                EoiRound.occupation_code == round_.occupation_code,
-                EoiRound.round_date == round_.round_date,
-            )
-        )
-        if existing is not None:
-            continue
-        session.add(round_)
-        staged_keys.add(key)
-        new_rounds.append(round_)
-    # Only advance the extraction watermark once parsing AND persisting
-    # have both succeeded — see sync_anzsco_occupations above.
-    page.last_extracted_at = dt.datetime.now(dt.timezone.utc)
-    session.commit()
-
-    # Recompute momentum for every occupation touched by a genuinely new
-    # round — nothing else in the system ever calls refresh_momentum, so
-    # without this, occupation_momentum rows are never produced end-to-end
-    # and GET /v1/occupations always shows momentum: null.
-    #
-    # Isolated per code: one occupation's momentum computation failing must
-    # not prevent the others from being refreshed, and must not undo the
-    # round persistence that already committed above.
-    new_codes = {r.occupation_code for r in new_rounds if r.occupation_code is not None}
-    for code in new_codes:
+    One occupation's failure must not prevent the others from refreshing,
+    and must not undo work that already committed.
+    """
+    for code in codes:
         try:
             refresh_momentum(session, code)
         except Exception:
@@ -167,6 +109,82 @@ def sync_skillselect_rounds(
             # into every occupation processed afterward.
             session.rollback()
             logger.exception("momentum refresh failed for occupation_code=%s", code)
+
+
+def sync_skillselect_rounds(
+    session: Session,
+    *,
+    url: str = SKILLSELECT_ROUNDS_URL,
+    client: httpx.Client | None = None,
+) -> list[EoiRound]:
+    # visa_code is no longer a caller-supplied default: the parser reads the
+    # subclass from the page's own round-summary table, so the label can't
+    # drift from the data it describes.
+    page, _changed, text = fetch_and_register(
+        session, url=url, domain="immi.homeaffairs.gov.au", category="skillselect_rounds", client=client
+    )
+    if not _needs_extraction(page):
+        return []
+
+    parse_result = parse_skillselect_rounds(
+        text,
+        source_url=url,
+        retrieved_at=dt.datetime.now(dt.timezone.utc),
+    )
+    if parse_result.skipped:
+        logger.warning("skillselect_rounds: skipped %d malformed row(s)", parse_result.skipped)
+
+    # Upsert by (visa_code, occupation_name_raw, round_date): a whole-page
+    # hash change (build stamp, "last reviewed" date) re-parses the same
+    # round data and must not manufacture duplicate rows / fake momentum.
+    #
+    # Keyed on the name, not the code. SkillSelect publishes occupation
+    # names only, so occupation_code is NULL on every scraped row until the
+    # crosswalk lands — and since Postgres treats NULLs as distinct, a
+    # code-keyed check would match nothing and re-insert all 140 rows on
+    # every run.
+    #
+    # The DB existence check alone isn't enough to dedup rows *within* this
+    # same batch: the production session (koshi.db.SessionLocal) sets
+    # autoflush=False, so an earlier session.add() in this loop is never
+    # flushed before the next iteration's SELECT runs. If a single scraped
+    # page contains two rows with an identical (visa_code, occupation_code,
+    # round_date) — plausible in messy government HTML tables — both would
+    # pass the "not found in DB" check, both would be queued, and the
+    # batch commit below would then raise an unhandled UniqueViolation,
+    # rolling back every valid new round from that page. Tracking keys
+    # already staged in this call closes that gap.
+    new_rounds = []
+    staged_keys: set[tuple[str, str, dt.date]] = set()
+    for round_ in parse_result.rows:
+        key = (round_.visa_code, round_.occupation_name_raw, round_.round_date)
+        if key in staged_keys:
+            continue
+        existing = session.scalar(
+            select(EoiRound).where(
+                EoiRound.visa_code == round_.visa_code,
+                EoiRound.occupation_name_raw == round_.occupation_name_raw,
+                EoiRound.round_date == round_.round_date,
+            )
+        )
+        if existing is not None:
+            continue
+        session.add(round_)
+        staged_keys.add(key)
+        new_rounds.append(round_)
+    # Only advance the extraction watermark once parsing AND persisting
+    # have both succeeded — see sync_anzsco_occupations above.
+    page.last_extracted_at = dt.datetime.now(dt.timezone.utc)
+    session.commit()
+
+    # NOTE: SkillSelect publishes occupation *names*, not ANZSCO codes, so
+    # every scraped round currently has occupation_code = NULL and this set
+    # is empty — momentum is not refreshed from scraping until the
+    # name->code crosswalk lands. The call stays wired up so the crosswalk
+    # is the only missing piece, and refresh_momentum_for_codes remains
+    # directly tested in the meantime.
+    new_codes = {r.occupation_code for r in new_rounds if r.occupation_code is not None}
+    refresh_momentum_for_codes(session, new_codes)
 
     rows = _RowsWithSkipCount(new_rounds)
     rows.skipped = parse_result.skipped
