@@ -12,7 +12,9 @@ from koshi.db import Base
 from koshi.models.eoi_rounds import EoiRound
 from koshi.models.occupation_momentum import OccupationMomentum
 from koshi.models.occupations import Occupation
+from koshi.models.occupation_titles import OccupationTitle
 from koshi.models.source_pages import SourcePage
+from koshi.crosswalk import normalize_title
 from koshi.pipeline import SKILLSELECT_ROUNDS_URL, sync_anzsco_occupations, sync_skillselect_rounds
 
 def _anzsco_page(occupations: list[tuple[str, str]], *, last_page: int = 0) -> bytes:
@@ -197,14 +199,85 @@ def test_sync_skillselect_rounds_persists_on_first_run(db_session):
     assert found.round_date == dt.date(2026, 7, 24)
 
 
-def test_sync_skillselect_rounds_leaves_occupation_code_null(db_session):
-    """SkillSelect gives names only. Until the crosswalk lands, the FK is
+def test_sync_skillselect_rounds_leaves_occupation_code_null_without_a_crosswalk(db_session):
+    """SkillSelect gives names only. With no crosswalk entry the FK stays
     NULL — the pipeline must not invent a code to fill it."""
     sync_anzsco_occupations(db_session, client=_client_returning(ANZSCO_FIXTURE))
 
     rounds = sync_skillselect_rounds(db_session, client=_client_returning(ROUNDS_FIXTURE))
 
     assert all(r.occupation_code is None for r in rounds)
+
+
+def _crosswalk_entry(session, title, code, source="LIN_19_051"):
+    session.add(
+        OccupationTitle(
+            title=title, title_normalized=normalize_title(title),
+            occupation_code=code, title_source=source, anzsco_edition="2013",
+            source_url="https://www.legislation.gov.au/F2019L00278",
+            retrieved_at=dt.datetime.now(dt.timezone.utc),
+            reliability_tier="official_scraped",
+        )
+    )
+
+
+def test_sync_skillselect_rounds_resolves_codes_from_the_crosswalk(db_session):
+    sync_anzsco_occupations(db_session, client=_client_returning(ANZSCO_FIXTURE))
+    _crosswalk_entry(db_session, "Software Engineer", "261313")
+    db_session.commit()
+
+    rounds = sync_skillselect_rounds(db_session, client=_client_returning(ROUNDS_FIXTURE))
+
+    resolved = [r for r in rounds if r.occupation_code is not None]
+    assert len(resolved) == 1
+    assert resolved[0].occupation_name_raw == "Software Engineer"
+    assert resolved[0].occupation_code == "261313"
+    # The filler occupations have no crosswalk entry and stay unresolved,
+    # keeping their raw name so they can be resolved later.
+    assert all(r.occupation_name_raw for r in rounds if r.occupation_code is None)
+
+
+def test_crosswalk_does_not_write_a_code_absent_from_occupations(db_session):
+    """eoi_rounds.occupation_code is an FK. The crosswalk legitimately holds
+    codes koshi's occupations table lacks (LIN 19/051 is ANZSCO 2013; the
+    JSA listing is 2022), and writing one would abort the whole batch."""
+    sync_anzsco_occupations(db_session, client=_client_returning(ANZSCO_FIXTURE))
+    _crosswalk_entry(db_session, "Software Engineer", "999999")  # not in occupations
+    db_session.commit()
+
+    rounds = sync_skillselect_rounds(db_session, client=_client_returning(ROUNDS_FIXTURE))
+
+    assert all(r.occupation_code is None for r in rounds)
+
+
+def test_resolved_rounds_produce_momentum_end_to_end(db_session):
+    """The point of the crosswalk: momentum was uncomputable while every
+    scraped round had a NULL occupation_code."""
+    sync_anzsco_occupations(db_session, client=_client_returning(ANZSCO_FIXTURE))
+    _crosswalk_entry(db_session, "Software Engineer", "261313")
+    # Two prior rounds so this sync's round is the third, completing
+    # compute_momentum's trailing-3 window.
+    for i, points in enumerate([70, 75]):
+        db_session.add(
+            EoiRound(
+                visa_code="189", occupation_code="261313",
+                occupation_name_raw="Software Engineer",
+                round_date=dt.date(2026, 5, 1) + dt.timedelta(days=30 * i),
+                threshold_points=points, invitations_issued=100,
+                source_url=SKILLSELECT_ROUNDS_URL,
+                retrieved_at=dt.datetime.now(dt.timezone.utc),
+                reliability_tier="official_scraped",
+            )
+        )
+    db_session.commit()
+
+    sync_skillselect_rounds(db_session, client=_client_returning(ROUNDS_FIXTURE))
+
+    momentum = db_session.scalar(
+        select(OccupationMomentum).where(OccupationMomentum.occupation_code == "261313")
+    )
+    assert momentum is not None
+    assert momentum.direction == "rising"  # 70 -> 75 -> 85
 
 
 def test_sync_skillselect_rounds_dedups_when_page_hash_changes_but_round_is_identical(db_session):

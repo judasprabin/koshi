@@ -11,6 +11,7 @@ from koshi.models import (  # noqa: F401
     ceiling_usage,
     eoi_rounds,
     occupation_momentum,
+    occupation_titles,
     occupations,
     source_pages,
 )

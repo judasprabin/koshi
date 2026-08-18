@@ -5,14 +5,18 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from koshi.crawler.fetch import fetch_and_register, fetch_text
+from koshi.crawler.fetch import fetch_and_register, fetch_bytes, fetch_text
+from koshi.crosswalk import normalize_title, resolve_occupation_code
 from koshi.extraction.anzsco_occupations import (
     ParseResult,
     has_next_page,
     parse_anzsco_occupations,
 )
+from koshi.extraction.abs_anzsco import parse_abs_titles
+from koshi.extraction.lin19051 import parse_lin_titles
 from koshi.extraction.skillselect_rounds import parse_skillselect_rounds
 from koshi.models.eoi_rounds import EoiRound
+from koshi.models.occupation_titles import OccupationTitle
 from koshi.models.occupations import Occupation
 from koshi.models.source_pages import SourcePage
 from koshi.momentum import refresh_momentum
@@ -40,6 +44,17 @@ class _RowsWithSkipCount(list):
 
 ANZSCO_URL = "https://www.jobsandskills.gov.au/data/occupation-and-industry-profiles/occupations-anzsco"
 SKILLSELECT_ROUNDS_URL = "https://immi.homeaffairs.gov.au/visas/working-in-australia/skillselect/invitation-rounds"
+# The instrument body, one iframe-hop from the register page. The date
+# segments pin the compilation; bump them when a new compilation lands.
+LIN19051_URL = (
+    "https://www.legislation.gov.au/F2019L00278/2026-03-28/2026-03-28"
+    "/text/original/epub/OEBPS/document_1/document_1.html"
+)
+ABS_ANZSCO_URL = (
+    "https://www.abs.gov.au/statistics/classifications/"
+    "anzsco-australian-and-new-zealand-standard-classification-occupations/2022/"
+    "anzsco%202022%20structure%20062023.xlsx"
+)
 
 # The live listing is 103 pages (1,236 results at 12 per page). The cap sits
 # above that as a runaway guard; it is not a deliberate truncation.
@@ -168,6 +183,119 @@ def refresh_momentum_for_codes(session: Session, codes: set[str]) -> None:
             logger.exception("momentum refresh failed for occupation_code=%s", code)
 
 
+def sync_occupation_titles(
+    session: Session,
+    *,
+    lin_url: str = LIN19051_URL,
+    abs_url: str = ABS_ANZSCO_URL,
+    client: httpx.Client | None = None,
+) -> list[OccupationTitle]:
+    """Load the name->code crosswalk from both sources.
+
+    Upserts by (title_normalized, title_source), so re-running replaces a
+    source's mapping in place rather than accumulating duplicates.
+
+    Both sources are loaded because neither is sufficient: against a live
+    invitation round, each resolves 132/140 on its own and their union
+    resolves 140/140.
+    """
+    retrieved_at = dt.datetime.now(dt.timezone.utc)
+    staged: dict[tuple[str, str], OccupationTitle] = {}
+
+    lin_html = fetch_text(
+        lin_url, domain="www.legislation.gov.au", category="lin19051", client=client
+    )
+    for row in parse_lin_titles(lin_html).rows:
+        key = (normalize_title(row.title), "LIN_19_051")
+        staged.setdefault(key, OccupationTitle(
+            title=row.title, title_normalized=key[0],
+            occupation_code=row.occupation_code, title_source="LIN_19_051",
+            anzsco_edition=row.anzsco_edition, source_url=lin_url,
+            retrieved_at=retrieved_at, reliability_tier="official_scraped",
+        ))
+
+    abs_bytes = fetch_bytes(
+        abs_url, domain="www.abs.gov.au", category="abs_anzsco", client=client
+    )
+    for row in parse_abs_titles(abs_bytes).rows:
+        key = (normalize_title(row.title), "ABS_ANZSCO")
+        staged.setdefault(key, OccupationTitle(
+            title=row.title, title_normalized=key[0],
+            occupation_code=row.occupation_code, title_source="ABS_ANZSCO",
+            anzsco_edition=row.anzsco_edition, source_url=abs_url,
+            retrieved_at=retrieved_at, reliability_tier="official_scraped",
+        ))
+
+    written: list[OccupationTitle] = []
+    for (normalized, source), row in staged.items():
+        existing = session.scalar(
+            select(OccupationTitle).where(
+                OccupationTitle.title_normalized == normalized,
+                OccupationTitle.title_source == source,
+            )
+        )
+        if existing is None:
+            session.add(row)
+            written.append(row)
+        elif existing.occupation_code != row.occupation_code:
+            existing.occupation_code = row.occupation_code
+            existing.retrieved_at = retrieved_at
+            written.append(existing)
+    session.commit()
+    logger.info(
+        "occupation_titles: %d staged, %d written", len(staged), len(written)
+    )
+    return written
+
+
+def resolve_round_occupation_codes(session: Session, rounds: list[EoiRound]) -> int:
+    """Fill occupation_code on scraped rounds from the name crosswalk.
+
+    Returns the number resolved. Rows the crosswalk cannot resolve keep
+    occupation_code = NULL and their occupation_name_raw, so they stay
+    re-resolvable once the crosswalk is extended — an unresolved name is
+    recorded as unresolved rather than guessed at.
+
+    A resolved code is only written if it actually exists in `occupations`,
+    because `eoi_rounds.occupation_code` is an FK. The crosswalk carries
+    codes koshi's occupation table legitimately does not have: LIN 19/051 is
+    coded against ANZSCO 2013 (25 of its codes are absent from 2022), and
+    the JSA listing koshi loads is 2022. Writing one of those would abort
+    the whole batch on a foreign-key violation.
+    """
+    resolved = 0
+    unresolved: list[str] = []
+    missing_fk: list[str] = []
+    for round_ in rounds:
+        if round_.occupation_code is not None:
+            continue
+        code = resolve_occupation_code(session, round_.occupation_name_raw)
+        if code is None:
+            unresolved.append(round_.occupation_name_raw)
+            continue
+        if session.get(Occupation, code) is None:
+            missing_fk.append(f"{round_.occupation_name_raw}->{code}")
+            continue
+        round_.occupation_code = code
+        resolved += 1
+
+    logger.info(
+        "crosswalk: resolved %d/%d round occupations", resolved, len(rounds)
+    )
+    if unresolved:
+        logger.warning(
+            "crosswalk: %d occupation name(s) unresolved, e.g. %r",
+            len(unresolved), unresolved[:5],
+        )
+    if missing_fk:
+        logger.warning(
+            "crosswalk: %d code(s) resolved but absent from occupations "
+            "(edition mismatch?), e.g. %r",
+            len(missing_fk), missing_fk[:5],
+        )
+    return resolved
+
+
 def sync_skillselect_rounds(
     session: Session,
     *,
@@ -191,15 +319,17 @@ def sync_skillselect_rounds(
     if parse_result.skipped:
         logger.warning("skillselect_rounds: skipped %d malformed row(s)", parse_result.skipped)
 
+    resolve_round_occupation_codes(session, parse_result.rows)
+
     # Upsert by (visa_code, occupation_name_raw, round_date): a whole-page
     # hash change (build stamp, "last reviewed" date) re-parses the same
     # round data and must not manufacture duplicate rows / fake momentum.
     #
     # Keyed on the name, not the code. SkillSelect publishes occupation
-    # names only, so occupation_code is NULL on every scraped row until the
-    # crosswalk lands — and since Postgres treats NULLs as distinct, a
-    # code-keyed check would match nothing and re-insert all 140 rows on
-    # every run.
+    # names only, so occupation_code stays NULL for any row the crosswalk
+    # cannot resolve, and Postgres treats NULLs as distinct, so a
+    # code-keyed check would not dedup those rows at all. The name is the
+    # stable natural key regardless of resolution outcome.
     #
     # The DB existence check alone isn't enough to dedup rows *within* this
     # same batch: the production session (koshi.db.SessionLocal) sets

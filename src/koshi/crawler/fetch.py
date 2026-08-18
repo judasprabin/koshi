@@ -54,6 +54,29 @@ def _get_with_retry(client: httpx.Client, url: str) -> httpx.Response:
     return response
 
 
+def fetch_bytes(
+    url: str, *, domain: str, category: str, client: httpx.Client | None = None
+) -> bytes:
+    """Fetch a binary resource (e.g. an .xlsx workbook).
+
+    Retries and error semantics match fetch_and_register.
+    """
+    owns_client = client is None
+    active_client = client or httpx.Client(
+        # Workbooks are larger than pages; the read budget reflects that.
+        timeout=httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0),
+        follow_redirects=True,
+    )
+    try:
+        try:
+            return _get_with_retry(active_client, url).content
+        except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+            raise FetchError(url=url, domain=domain, category=category, cause=exc) from exc
+    finally:
+        if owns_client:
+            active_client.close()
+
+
 def fetch_text(
     url: str, *, domain: str, category: str, client: httpx.Client | None = None
 ) -> str:
