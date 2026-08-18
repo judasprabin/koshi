@@ -15,14 +15,35 @@ from koshi.models.occupations import Occupation
 from koshi.models.source_pages import SourcePage
 from koshi.pipeline import SKILLSELECT_ROUNDS_URL, sync_anzsco_occupations, sync_skillselect_rounds
 
-ANZSCO_FIXTURE = b"""
-<table id="occupation-list">
-  <thead><tr><th>ANZSCO Code</th><th>Occupation</th><th>Unit Group</th></tr></thead>
-  <tbody>
-    <tr><td>261313</td><td>Software Engineer</td><td>2613 Software and Applications Programmers</td></tr>
-  </tbody>
-</table>
-"""
+def _anzsco_page(occupations: list[tuple[str, str]], *, last_page: int = 0) -> bytes:
+    """Build a page in the real Drupal Views card-grid shape.
+
+    The old fixture here was a synthetic `<table id="occupation-list">`,
+    which exists nowhere on the live site. `last_page` drives the pager:
+    0 means a single page, so tests that return the same body for every
+    request don't loop.
+    """
+    cards = "".join(
+        '<div class="rowc"><a href="/x"><div class="card_inner">'
+        f'<div class="card_anzsco">ANZSCO {code}</div>'
+        f'<h4 class="card_title">{name}</h4>'
+        "</div></a></div>"
+        for code, name in occupations
+    )
+    pager = "".join(
+        f'<li class="page-item"><a href="?page={n}" class="page-link">{n + 1}</a></li>'
+        for n in range(1, last_page + 1)
+    )
+    return (
+        '<html><body><div class="views-element-container view-occupation-index" '
+        'id="block-views-block-occupation-index-block-occupations">'
+        f'<div class="view-content row">{cards}</div>'
+        + (f"<nav><ul>{pager}</ul></nav>" if pager else "")
+        + "</div></body></html>"
+    ).encode()
+
+
+ANZSCO_FIXTURE = _anzsco_page([("261313", "Software Engineer")])
 
 # SkillSelect fixtures are built to the *real* page structure: content is
 # entity-encoded JSON inside a hidden input, the occupation table has two
@@ -124,6 +145,36 @@ def test_sync_anzsco_occupations_persists_on_first_run(db_session):
     assert len(result) == 1
     found = db_session.get(Occupation, "261313")
     assert found.name == "Software Engineer"
+
+
+def test_sync_anzsco_occupations_follows_the_pager(db_session, monkeypatch):
+    """The live listing is 12 cards over 103 pages. Without following the
+    pager koshi loads 12 of 1,236 occupations."""
+    monkeypatch.setattr(pipeline_module, "ANZSCO_PAGE_INTERVAL_SECONDS", 0.0)
+    pages = {
+        0: _anzsco_page([("261313", "Software Engineer")], last_page=2),
+        1: _anzsco_page([("254499", "Registered Nurse")], last_page=2),
+        2: _anzsco_page([("2211", "Accountants")], last_page=2),
+    }
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(str(request.url))
+        page_no = int(request.url.params.get("page", 0))
+        return httpx.Response(200, content=pages[page_no])
+
+    result = sync_anzsco_occupations(
+        db_session, client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+
+    assert len(result) == 3
+    assert len(requested) == 3  # page 1 registered, pages 2-3 fetched plainly
+    assert {o.code for o in result} == {"261313", "254499", "2211"}
+    # Only the first page is registered in source_pages - the pages change
+    # together, so 103 registry rows would add no signal.
+    assert db_session.query(SourcePage).count() == 1
+    assert db_session.get(Occupation, "2211").code_grain == "unit_group"
+    assert db_session.get(Occupation, "261313").code_grain == "occupation"
 
 
 def test_sync_anzsco_occupations_is_a_noop_when_page_is_unchanged(db_session):

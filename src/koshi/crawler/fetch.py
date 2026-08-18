@@ -54,6 +54,32 @@ def _get_with_retry(client: httpx.Client, url: str) -> httpx.Response:
     return response
 
 
+def fetch_text(
+    url: str, *, domain: str, category: str, client: httpx.Client | None = None
+) -> str:
+    """Fetch a page and return its text, without touching source_pages.
+
+    For additional pages of a paginated source whose watermark is already
+    tracked against page 1: registering all 103 ANZSCO listing pages as
+    separate source_pages rows would bloat the registry without adding
+    signal, since they change together.
+
+    Retries and error semantics match fetch_and_register.
+    """
+    owns_client = client is None
+    active_client = client or httpx.Client(
+        timeout=httpx.Timeout(connect=10.0, read=15.0, write=10.0, pool=10.0)
+    )
+    try:
+        try:
+            return _get_with_retry(active_client, url).text
+        except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+            raise FetchError(url=url, domain=domain, category=category, cause=exc) from exc
+    finally:
+        if owns_client:
+            active_client.close()
+
+
 def fetch_and_register(
     session: Session,
     *,
