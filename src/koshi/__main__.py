@@ -20,7 +20,11 @@ Runs, in order:
 5. sync_skillselect_previous_rounds — backfills historical rounds. Momentum
    needs a trailing window of three rounds and the current-round page
    publishes one, so without this every occupation's trend is null.
-6. seed_ceiling_usage — persists any manually-curated ceiling data in
+6. backfill_unresolved_round_codes — retries code resolution for stored
+   rounds that never resolved. The crosswalk grows independently of the
+   source pages, and an unchanged page is never re-parsed, so without
+   this a row unresolved once stays unresolved forever.
+7. seed_ceiling_usage — persists any manually-curated ceiling data in
    seeds/ceiling_usage_manual.yaml. That file is currently empty by design:
    per-occupation ceilings are not published anywhere at koshi's grain.
 
@@ -47,6 +51,7 @@ from sqlalchemy import text
 from koshi.db import SessionLocal
 from koshi.logging_config import setup_logging
 from koshi.pipeline import (
+    backfill_unresolved_round_codes,
     sync_abs_occupations,
     sync_anzsco_occupations,
     sync_occupation_titles,
@@ -93,6 +98,7 @@ def main() -> int:
         ("occupation_titles", lambda: sync_occupation_titles(session)),
         ("skillselect_rounds", lambda: sync_skillselect_rounds(session)),
         ("skillselect_previous_rounds", lambda: sync_skillselect_previous_rounds(session)),
+        ("backfill_round_codes", lambda: backfill_unresolved_round_codes(session)),
         ("ceiling_usage_seed", lambda: seed_ceiling_usage(session, CEILING_USAGE_SEED_PATH)),
     ]
 

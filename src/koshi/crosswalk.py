@@ -37,16 +37,24 @@ from koshi.models.occupation_titles import TITLE_SOURCE_PRECEDENCE, OccupationTi
 logger = logging.getLogger(__name__)
 
 _WHITESPACE_RE = re.compile(r"\s+")
+# SkillSelect annotates occupation names with footnote markers that refer
+# to notes under the table - "Medical Radiation Therapist+", "Occupation*".
+# They are presentation, not part of the name, and are stripped before
+# matching. Trailing only: a marker never begins a real occupation title.
+_FOOTNOTE_MARKERS = "*+†‡#^~"
 
 
 def normalize_title(title: str) -> str:
-    """Fold a title for matching: collapse whitespace, strip, casefold.
+    """Fold a title for matching: strip footnote markers and whitespace,
+    collapse internal spaces, casefold.
 
     Needed because the sources disagree on presentation - LIN renders
     titles in lower case, ABS in title case, SkillSelect in title case with
-    occasional non-breaking spaces - while meaning the same occupation.
+    occasional non-breaking spaces and footnote markers - while meaning the
+    same occupation.
     """
-    return _WHITESPACE_RE.sub(" ", title.replace("\xa0", " ")).strip().casefold()
+    folded = _WHITESPACE_RE.sub(" ", title.replace("\xa0", " ")).strip()
+    return folded.rstrip(_FOOTNOTE_MARKERS).strip().casefold()
 
 
 def resolve_occupation_code(session: Session, title: str) -> str | None:

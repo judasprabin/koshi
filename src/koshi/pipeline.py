@@ -12,7 +12,11 @@ from koshi.extraction.anzsco_occupations import (
     has_next_page,
     parse_anzsco_occupations,
 )
-from koshi.extraction.abs_anzsco import parse_abs_occupations, parse_abs_titles
+from koshi.extraction.abs_anzsco import (
+    ANZSCO_EDITION as ABS_ANZSCO_EDITION,
+    parse_abs_occupations,
+    parse_abs_titles,
+)
 from koshi.extraction.lin19051 import parse_lin_titles
 from koshi.extraction.skillselect_previous_rounds import (
     parse_skillselect_previous_rounds,
@@ -217,6 +221,7 @@ def sync_abs_occupations(
                 name=row.title,
                 unit_group=row.occupation_code[:4],
                 code_grain="occupation",
+                anzsco_edition=ABS_ANZSCO_EDITION,
                 source_url=url,
                 retrieved_at=retrieved_at,
                 reliability_tier="official_scraped",
@@ -272,6 +277,39 @@ def sync_occupation_titles(
             anzsco_edition=row.anzsco_edition, source_url=abs_url,
             retrieved_at=retrieved_at, reliability_tier="official_scraped",
         ))
+
+    # LIN 19/051 is coded against ANZSCO 2013 and names occupations the
+    # 2022 classification does not contain - Cabinetmaker (394111) is
+    # invited in live rounds and exists only there. Adding those as
+    # edition-tagged occupation rows is what lets such rounds link at all;
+    # without it the crosswalk resolves the name but the FK has no target.
+    #
+    # Only codes ABS does not already carry are added, so 2022 stays
+    # authoritative wherever the editions overlap.
+    existing_codes = {c for (c,) in session.execute(select(Occupation.code))}
+    edition_only = 0
+    for row in parse_lin_titles(lin_html).rows:
+        if row.occupation_code in existing_codes:
+            continue
+        session.merge(
+            Occupation(
+                code=row.occupation_code,
+                name=row.title,
+                unit_group=row.occupation_code[:4],
+                code_grain="occupation",
+                anzsco_edition=row.anzsco_edition,
+                source_url=lin_url,
+                retrieved_at=retrieved_at,
+                reliability_tier="official_scraped",
+            )
+        )
+        existing_codes.add(row.occupation_code)
+        edition_only += 1
+    if edition_only:
+        logger.info(
+            "occupation_titles: added %d ANZSCO-2013-only occupation(s) absent from 2022",
+            edition_only,
+        )
 
     written: list[OccupationTitle] = []
     for (normalized, source), row in staged.items():
@@ -369,6 +407,47 @@ def _persist_rounds(session: Session, rounds: list[EoiRound]) -> list[EoiRound]:
         staged_keys.add(key)
         new_rounds.append(round_)
     return new_rounds
+
+
+def backfill_unresolved_round_codes(session: Session) -> list[EoiRound]:
+    """Retry code resolution for stored rounds that never resolved.
+
+    Without this, a row unresolved once stays unresolved forever: the
+    source page has not changed, so `_needs_extraction` returns False and
+    the round is never revisited — even though the *crosswalk* may have
+    grown since (a new source, a new edition, a normalisation fix).
+
+    This is the case that actually bit: archived rounds naming
+    `Cabinetmaker` were persisted before LIN 19/051's ANZSCO-2013-only
+    occupations were loaded, so their FK target did not yet exist.
+
+    Momentum is refreshed for anything newly resolved, since a round that
+    only now has a code was not counted in any earlier trend.
+    """
+    pending = list(
+        session.scalars(select(EoiRound).where(EoiRound.occupation_code.is_(None)))
+    )
+    if not pending:
+        return []
+
+    resolved = [r for r in pending if _apply_code(session, r)]
+    session.commit()
+    logger.info(
+        "backfill: resolved %d of %d previously-unresolved round(s)",
+        len(resolved), len(pending),
+    )
+    refresh_momentum_for_codes(session, {r.occupation_code for r in resolved})
+    return resolved
+
+
+def _apply_code(session: Session, round_: EoiRound) -> bool:
+    """Resolve one round's code, honouring the occupations FK. Returns
+    whether a code was written."""
+    code = resolve_occupation_code(session, round_.occupation_name_raw)
+    if code is None or session.get(Occupation, code) is None:
+        return False
+    round_.occupation_code = code
+    return True
 
 
 def resolve_round_occupation_codes(session: Session, rounds: list[EoiRound]) -> int:

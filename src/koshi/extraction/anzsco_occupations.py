@@ -34,6 +34,9 @@ from koshi.provenance import require_provenance
 
 logger = logging.getLogger(__name__)
 
+# JSA publishes the 2022 edition (alongside OSCA, which koshi does not use).
+ANZSCO_EDITION = "2022"
+
 CARD_CONTAINER_SELECTOR = "div.view-occupation-index"
 CARD_SELECTOR = "div.rowc"
 
@@ -99,6 +102,7 @@ def _parse_card(card, *, source_url: str, retrieved_at: dt.datetime) -> Occupati
         name=name,
         unit_group=code[:4],
         code_grain=code_grain,
+        anzsco_edition=ANZSCO_EDITION,
         source_url=source_url,
         retrieved_at=retrieved_at,
         reliability_tier="official_scraped",

@@ -26,6 +26,12 @@ class Occupation(Base):
     # the two kinds of row are indistinguishable in the table and a join
     # silently matches the wrong grain.
     code_grain: Mapped[str] = mapped_column(String, nullable=False, default="occupation")
+    # Which ANZSCO edition this code comes from. Three are simultaneously
+    # live across koshi's sources, and they do not fully overlap: LIN
+    # 19/051 (the binding instrument) is 2013 and carries codes such as
+    # 394111 Cabinetmaker that the 2022 classification does not. Recording
+    # the edition lets those coexist instead of looking like bad data.
+    anzsco_edition: Mapped[str] = mapped_column(String, nullable=False, default="2022")
     source_url: Mapped[str] = mapped_column(String, nullable=False)
     retrieved_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     reliability_tier: Mapped[str] = mapped_column(String, nullable=False, default="official_scraped")
