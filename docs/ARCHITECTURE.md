@@ -333,8 +333,16 @@ design spec describes a much larger system. Concretely, **not yet built**:
 - State nomination status, visa comparison, national/reference endpoints —
   separate future plans (design spec §10).
 - PDF extraction tier and Claude-fallback extraction tier (design spec
-  §5) — the two pages this slice scrapes are both clean HTML tables, so
-  neither tier was needed yet.
+  §5). Neither is needed: the 2026-08-17 source audit fetched all 23
+  catalogued sources and **none** requires PDF extraction, LLM extraction,
+  or JS rendering.
+
+  Note the two pages this slice scrapes are *not* "clean HTML tables", as
+  this section previously claimed — neither contains a `<table>` tag.
+  SkillSelect ships hidden-field JSON (`koshi.extraction.homeaffairs`) and
+  the ANZSCO listing is a Drupal card grid. Both parsers were rewritten
+  against captured live pages on 2026-08-18; the earlier versions were
+  built against synthetic fixtures and extracted zero rows in production.
 - A scheduled Cloud Run Job triggering ingestion — `python -m koshi` is run
   by hand today.
 - Cloud SQL / Terraform / any GCP deployment — deliberately deferred until

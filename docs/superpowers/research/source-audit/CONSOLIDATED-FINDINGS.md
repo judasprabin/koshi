@@ -121,7 +121,28 @@ constraint outright, since 485/500/482/186 are multi-stream. Stream also makes
 
 ---
 
-## Fix the parsers (both root-caused)
+## Status — what has been actioned since this audit
+
+| Item | State |
+|---|---|
+| **D1** delete fabricated `ceiling_usage` rows | ✅ done — seed file now comment-only |
+| Three docs revised | ✅ done — source catalog, data model, ETL architecture |
+| **Both parsers fixed** | ✅ done — SkillSelect **0 → 140 rows**; ANZSCO now reads the card grid and follows all 103 pages |
+| Shared hidden-field decoder | ✅ done — `koshi.extraction.homeaffairs`, unblocks 9 sources |
+| Structural assertions (§11.5) | ◐ partial — shape/row-floor/root-key assertions live in the parsers; soft-404 helper written but not yet wired into the fetcher |
+| Migrations | ✅ `0007` `eoi_rounds.occupation_name_raw` · `0008` `occupations.code_grain` |
+| **D3** name→code crosswalk | ⬜ next — `occupation_code` is NULL on every scraped round until it lands |
+| **D2/D5** edition + stream migrations | ⬜ not started |
+| **D4** BP0068 ingestion | ⬜ not started |
+
+**Known consequence of the current state:** momentum is not computed from
+scraped rounds, because `occupation_code` is NULL until the crosswalk resolves
+names to codes. `refresh_momentum_for_codes` is wired and directly tested; the
+crosswalk is the only missing piece.
+
+---
+
+## Fix the parsers (both root-caused) — ✅ done 2026-08-18
 
 1. **All Home Affairs pages** — content is HTML-entity-encoded JSON in
    `<input id="ctl00_PlaceHolderMain_PageSchemaHiddenField_Input">`. Decode:
