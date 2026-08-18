@@ -131,14 +131,25 @@ constraint outright, since 485/500/482/186 are multi-stream. Stream also makes
 | Shared hidden-field decoder | ✅ done — `koshi.extraction.homeaffairs`, unblocks 9 sources |
 | Structural assertions (§11.5) | ◐ partial — shape/row-floor/root-key assertions live in the parsers; soft-404 helper written but not yet wired into the fetcher |
 | Migrations | ✅ `0007` `eoi_rounds.occupation_name_raw` · `0008` `occupations.code_grain` |
-| **D3** name→code crosswalk | ⬜ next — `occupation_code` is NULL on every scraped round until it lands |
+| **D3** name→code crosswalk | ✅ done — LIN-first, **139/140** rounds resolved live |
+| `occupations` re-sourced to ABS | ✅ done — JSA's browse UI carried 878 of 1,076 occupations; ABS Table 5 is authoritative |
 | **D2/D5** edition + stream migrations | ⬜ not started |
 | **D4** BP0068 ingestion | ⬜ not started |
 
-**Known consequence of the current state:** momentum is not computed from
-scraped rounds, because `occupation_code` is NULL until the crosswalk resolves
-names to codes. `refresh_momentum_for_codes` is wired and directly tested; the
-crosswalk is the only missing piece.
+**Verified live 2026-08-18:** `python -m koshi` exits 0 with 1,480 occupations,
+1,929 crosswalk entries and 140 rounds, and `GET /v1/occupations/253518`
+returns a real 100-point threshold carrying `official_scraped` provenance —
+koshi's first genuine end-to-end government data.
+
+**Two known gaps at this state:**
+
+1. **Momentum still shows null**, but no longer for a schema reason: it needs
+   three rounds per occupation and only one round is published on the current
+   page. Backfilling from the `previous-rounds` source (catalog source 17,
+   19 rounds) is what closes it.
+2. **One occupation does not resolve** — Cabinetmaker (394111), carried by
+   LIN 19/051 under ANZSCO 2013 and absent from 2022. This is the genuine
+   edition split (open question #14), now a single instance rather than 23.
 
 ---
 
