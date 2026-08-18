@@ -121,10 +121,10 @@ happen" — acquisition, extraction, validation, publication), modeled as a
 
 | Layer | Today | Target (this doc) |
 |---|---|---|
-| Sources extracted | 2 (ANZSCO, SkillSelect rounds) | 16 cataloged sources |
-| Tables populated | 5 | 18 (13 new) |
-| Extraction tiers in use | 1 (deterministic HTML) | 2 (+ manual curation); tiers 3/4 pre-researched |
-| Fault tolerance | None (grep-verified) | Retry/backoff, per-item isolation, structured logging, run summaries |
+| Sources extracted | **6** (JSA, SkillSelect ×2, ABS, LIN 19/051, BP0068) | 23 cataloged sources |
+| Tables populated | **8 of 9** (`ceiling_usage` is empty by design) | 22 domain tables |
+| Extraction tiers in use | **2** — deterministic (JSON API, hidden-field JSON, XLSX, epub, HTML) + manual curation | Same. **Tiers 3/4 are not needed by any catalogued source** |
+| Fault tolerance | Retry/backoff, per-item isolation, structured logging, run summaries, **structural assertions** | + quality engine, quarantine, releases |
 | Scheduling | Manual (`python -m koshi`) | Still manual this pass; cadence groups documented for later |
 | Deployment | Local only | Local-first; GCP target documented for later |
 | Medallion pipeline | Not yet built | Bronze snapshots → Silver contracts → Gold releases |
@@ -849,7 +849,7 @@ side rendering — see §9.
 
 > **Exhaustive schema, ERD, and migration details are in the sibling doc:**
 > [`docs/superpowers/research/2026-08-16-koshi-data-model.md`](../research/2026-08-16-koshi-data-model.md)
-> — all 18 tables with column definitions, constraints, FK relationships,
+> — all 22 domain tables with column definitions, constraints, FK relationships,
 > migration numbering, and provenance conventions.
 
 ### Entity-Relationship Diagram
@@ -908,26 +908,45 @@ erDiagram
 > `points_criteria_reference`, `english_test_bands`, `eligibility_requirements`,
 > `program_allocation`, `policy_events` — all carry provenance but have no FKs.
 
-### Table Inventory (18 tables)
+### Table Inventory
 
-| Migration | Table | Kind | Key constraints |
-|---|---|---|---|
-| 0001–0006 | `occupations`, `eoi_rounds`, `ceiling_usage`, `occupation_momentum`, `source_pages` | (built) | Provenance trio on all fact tables |
-| 0007 | `visa_subclasses` | reference | `code` PK; self-FK `onward_pathway_code` (nullable, 2-pass seed) |
-| 0008 | `english_test_bands` | reference | `UniqueConstraint(test_name, band_level)` |
-| 0009 | `assessing_bodies` | reference | `body_name` PK |
-| 0010 | `occupation_assessing_bodies` | join | Composite PK `(occupation_code, body_name)` |
-| 0011 | `points_criteria_reference` | reference | `UniqueConstraint(criterion_name, band_description)` |
-| 0012 | `policy_events` | editorial | `visa_code` FK nullable |
-| 0013 | `state_nomination_status` | fact | `status` CHECK `open/limited/closed`; `UniqueConstraint(state_code, occupation_code, as_of_date)` |
-| 0014 | `list_change_log` | fact | `change_type` CHECK `added/removed`; `UniqueConstraint(list_name, occupation_code, change_type, effective_date)` |
-| 0015 | `processing_times` | fact | `UniqueConstraint(visa_code, as_of_date)` |
-| 0016 | `program_allocation` | aggregate | `UniqueConstraint(program_year, stream_name)` |
-| 0017 | `application_funnel` | fact | `UniqueConstraint(visa_code, program_year, as_of_date)`; funnel-order CHECK; second nullable provenance triple for `granted_count` |
-| 0018 | `eligibility_requirements` | reference | `requirement_type` unique |
-| 0019 | `skills_priority_ratings` | fact | `UniqueConstraint(occupation_code, as_of_date)` |
+> **Rewritten 2026-08-18.** This previously listed a planned `0007`–`0019`
+> migration allocation in catalog order. Tables have not landed in that order,
+> and the planned constraints for `application_funnel` describe a shape that
+> was deliberately **not** built — see the deviations below. A stale plan that
+> contradicts the code is worse than no plan.
 
-**Control plane tables** (not part of the 18 domain tables): `sources`,
+**Built** — actual migration chain:
+
+| Migration | Table / change | Key constraints |
+|---|---|---|
+| `0001`–`0006` | `occupations`, `eoi_rounds`, `ceiling_usage`, `occupation_momentum`, `source_pages` | Provenance trio on all fact tables |
+| `0007` | `eoi_rounds.occupation_name_raw` | Unique key moved to `(visa_code, occupation_name_raw, round_date)` — the code is NULL when unresolved, and Postgres treats NULLs as distinct |
+| `0008` | `occupations.code_grain` | CHECK `unit_group`/`occupation` |
+| `0009` | `occupation_titles` (C22) | `UniqueConstraint(title_normalized, title_source)`; **no FK** to `occupations` |
+| `0010` | `occupations.anzsco_edition` | Lets ANZSCO-2013-only codes coexist with 2022 |
+| `0011` | `visa_subclasses` (C6) + `application_funnel` (C16) | `code` PK; `UniqueConstraint(visa_code, program_year)` |
+
+⚠ **`application_funnel` deviates from the original plan in three ways**, each
+deliberate: no `as_of_date` in the unique key (BP0068 is an annual
+restatement, not a snapshot series), a single provenance trio rather than a
+second one scoped to `granted_count` (only granted is sourced), and **no
+funnel-order or non-negative CHECK** — BP0068 is confidentialised and one real
+row reports **-2**.
+
+**Not built** — no migration numbers are pre-allocated, for the reason above:
+
+`english_test_bands`, `assessing_bodies`, `occupation_assessing_bodies`,
+`points_criteria_reference`, `policy_events`, `state_nomination_status`,
+`list_change_log`, `processing_times`, `program_allocation`,
+`eligibility_requirements`, `skills_priority_ratings`, plus the audit's
+additions `anzsco_osca_crosswalk` (C19), `occupation_list_membership` (C20)
+and `visa_fees` (C21).
+
+Constraint details for these live in the data-model doc, which is the single
+source of truth for schema.
+
+**Control plane tables** (not part of the domain tables): `sources`,
 `resources`, `snapshots`, `extraction_strategies`, `contracts`,
 `quality_policies`, `schedules`, `pipeline_runs`, `dataset_releases`.
 
@@ -1215,7 +1234,7 @@ is the fault-tolerance retrofit (§14).
 ### 11.3 Exit Code Signaling
 
 - `0` — clean success, all steps passed.
-- `2` — partial failure (expected common state at 16 sources).
+- `2` — partial failure (expected common state at 23 sources).
 - `3` — total failure (no steps succeeded).
 - `1` — reserved for fatal init (DB unreachable before any step runs).
 
@@ -1240,7 +1259,7 @@ found the failure modes that survive all of it — cases where the pipeline
 reports success while extracting nothing, or loads data that is silently wrong.
 
 **These are not hypothetical.** Both existing parsers currently exit clean while
-extracting zero rows, and two fabricated rows shipped to the API under a real
+extracting zero rows (both now fixed), and two fabricated rows shipped to the API under a real
 government URL.
 
 | # | Failure mode | Why existing tolerance misses it | Required assertion |
@@ -1265,7 +1284,7 @@ current pipeline answers it wrongly in at least two places.
 
 ### 12.1 Cadence-Group Model (Documented, Not Active)
 
-Running all 16 sources on one daily cron is wasteful — most change monthly or
+Running all 23 sources on one daily cron is wasteful — most change monthly or
 less:
 
 | Cadence | Sources | Trigger (once deployed) |
@@ -1538,7 +1557,7 @@ scheduled ingestion.
 - Add dataset-specific quality policies for each contract.
 - Test end-to-end for each source.
 
-**Deliverable**: Full 16-source catalog operational with quality-gated,
+**Deliverable**: Full 23-source catalog operational with quality-gated,
 versioned releases.
 
 ### Source Build Order (Phases 2 + 5 combined)
@@ -1647,12 +1666,12 @@ version this file overwrites).
 
 | Prior Doc | This Doc |
 |---|---|
-| Fault-tolerance → source registry → 12 sources in curation-effort order | **Provider bake-off** → **control plane + raw snapshots** → **three vertical slices** (easy HTML, difficult JS/PDF, semantic LLM) → **quality engine + publication** → **API + deployment** → **remaining 13 sources** |
+| Fault-tolerance → source registry → 12 sources in curation-effort order | **Provider bake-off** → **control plane + raw snapshots** → **three vertical slices** (easy HTML, difficult JS/PDF, semantic LLM) — *superseded: the audit found no JS/PDF/LLM source, see §9* → **quality engine + publication** → **API + deployment** → **remaining 13 sources** |
 
 ### Preserved Unchanged
 
-- All 16 source catalog entries and tier assignments.
-- All 18 domain tables and their migration mappings.
+- All source catalog entries and tier assignments (16 at the time of that comparison; **23 after the 2026-08-17 audit** — see §6).
+- All 22 domain tables and their migration mappings.
 - Regulatory posture, provenance trio, two-watermark design.
 - Local-first deployment rules (Cloud Run, never GKE; GitHub Actions + WIF, never Cloud Build).
 - Technology alternatives analysis (expanded with managed provider comparisons).
@@ -1734,9 +1753,11 @@ Faithful to this doc if:
 - Every publication is a named, versioned `dataset_release` with rollback
   capability.
 - `pipeline_runs` tracks every stage with parent/child lineage.
-- Provider selection follows the deterministic-first, quality-aware fallback
-  ladder; managed providers are only invoked when custom extraction fails
-  quality gates.
+- Extraction stays deterministic. The provider ladder remains available in
+  `extraction_strategies`, but **no catalogued source requires a managed
+  provider, JS rendering, PDF extraction or LLM extraction** (§9), so
+  invoking one is a signal that a source changed shape — not routine
+  operation.
 - Semantic drift detection runs on every extraction, comparing against the
   previous snapshot.
 - Every fact row carries the provenance trio (or is explicitly `derived`).
