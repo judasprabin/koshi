@@ -105,42 +105,48 @@ def test_get_occupation_returns_200_with_nulls_when_no_ceiling_data_yet(db_sessi
     assert body["momentum"] is None
 
 
-def test_seeded_ceiling_usage_is_actually_servable_end_to_end(db_session, client):
-    """Regression for Fix 5: nothing previously persisted the rows
-    load_ceiling_usage_seed produced, so a fresh install following the
-    README had no ceiling_usage rows and every occupation 404'd. This seeds
-    via seed_ceiling_usage (the real shipped seed file) rather than
-    inserting a CeilingUsage row by hand."""
-    # The shipped seed file covers both 261313 and 254499 — every occupation
-    # code it references must already exist to satisfy ceiling_usage's FK.
-    db_session.add_all(
-        [
-            Occupation(
-                code="261313", name="Software Engineer", unit_group="2613",
-                source_url="https://www.jobsandskills.gov.au/data/occupation-and-industry-profiles/occupations-anzsco",
-                retrieved_at=dt.datetime(2026, 8, 1, tzinfo=dt.timezone.utc),
-                reliability_tier="official_scraped",
-            ),
-            Occupation(
-                code="254499", name="Registered Nurse (Aged Care)", unit_group="2544",
-                source_url="https://www.jobsandskills.gov.au/data/occupation-and-industry-profiles/occupations-anzsco",
-                retrieved_at=dt.datetime(2026, 8, 1, tzinfo=dt.timezone.utc),
-                reliability_tier="official_scraped",
-            ),
-        ]
+def test_shipped_ceiling_seed_loads_cleanly_and_serves_without_404(db_session, client):
+    """The shipped seed file must always parse, and a fresh install must
+    serve 200 with null ceiling fields rather than 404.
+
+    History: this test used to assert the two rows the seed file shipped
+    (261313 → 3200/5000, 254499 → 1800/4000). The 2026-08-17 source audit
+    established those values cited a page that does not contain them —
+    per-occupation ceilings are not published at the 6-digit grain this
+    table needs — so the seed file is now intentionally empty and those
+    assertions are gone with the data.
+
+    What remains here is the half of Fix 5 that still applies: a fresh
+    install following the README must not 404. The other half — that
+    seed_ceiling_usage actually *persists* what the loader produces — is
+    covered against a fixture seed file by
+    test_seed_ceiling_usage_persists_rows in test_ceiling_seed_loader.py,
+    which does not depend on the shipped file carrying data.
+    """
+    db_session.add(
+        Occupation(
+            code="261313", name="Software Engineer", unit_group="2613",
+            source_url="https://www.jobsandskills.gov.au/data/occupation-and-industry-profiles/occupations-anzsco",
+            retrieved_at=dt.datetime(2026, 8, 1, tzinfo=dt.timezone.utc),
+            reliability_tier="official_scraped",
+        )
     )
     db_session.commit()
 
+    # Must not raise: guards against a malformed re-population of the file.
     new_rows = seed_ceiling_usage(db_session, CEILING_USAGE_SEED_PATH)
-    assert len(new_rows) >= 1
+    assert new_rows == [], (
+        "the shipped ceiling seed is intentionally empty — see the file header. "
+        "If you re-populated it from a real source, update this test."
+    )
 
     response = client.get("/v1/occupations/261313")
 
     assert response.status_code == 200
     body = response.json()
-    assert body["ceiling_issued"]["value"] == 3200
-    assert body["ceiling_cap"]["value"] == 5000
-    assert body["places_left"] == 1800
+    assert body["ceiling_issued"] is None
+    assert body["ceiling_cap"] is None
+    assert body["places_left"] is None
 
 
 def test_get_occupation_momentum_carries_reliability_tier_and_computed_at(db_session, client):

@@ -1,17 +1,40 @@
-# Manually curated against the Migration Program planning levels report
-# (design spec §4/§5 tier 5 — this page is a periodic PDF, not a scrapable
-# table; values entered by hand and cited, reviewed on the cadence §11 sets).
-- occupation_code: "261313"
-  program_year: "2025-26"
-  issued: 3200
-  ceiling: 5000
-  as_of_date: "2026-07-31"
-  source_url: "https://immi.homeaffairs.gov.au/what-we-do/migration-program-planning-levels"
-  retrieved_at: "2026-08-01T00:00:00+00:00"
-- occupation_code: "254499"
-  program_year: "2025-26"
-  issued: 1800
-  ceiling: 4000
-  as_of_date: "2026-07-31"
-  source_url: "https://immi.homeaffairs.gov.au/what-we-do/migration-program-planning-levels"
-  retrieved_at: "2026-08-01T00:00:00+00:00"
+# ceiling_usage — INTENTIONALLY EMPTY. Do not add rows without reading this.
+#
+# This file previously shipped two rows (261313 → 3200/5000, 254499 →
+# 1800/4000) citing:
+#   https://immi.homeaffairs.gov.au/what-we-do/migration-program-planning-levels
+#
+# The 2026-08-17 source audit established that citation is false, and that
+# the data is not publicly available at the grain this table requires:
+#
+#   1. The planning-levels page was decoded in full. It contains a
+#      visa-category table only — no per-occupation ceilings. (It is also
+#      static HTML, not the "periodic PDF" this file's old header claimed.)
+#   2. https://immi.homeaffairs.gov.au/visas/working-in-australia/skillselect/occupation-ceilings
+#      returns HTTP 404. The live SkillSelect ceilings section is prose with
+#      zero tables.
+#   3. data.gov.au publishes no SkillSelect/EOI dataset.
+#   4. The only PY2025-26 ceiling table found anywhere is inside an FOI
+#      disclosure release (fa-260100545) as scanned page images, at
+#      4-digit unit-group grain — not the 6-digit grain of this table.
+#
+# See docs/superpowers/research/source-audit/CONSOLIDATED-FINDINGS.md (D1).
+#
+# Those rows passed require_provenance because source_url and retrieved_at
+# were non-null — the check tests presence, not truth. Provenance that
+# points at a page which does not contain the fact is worse than a null:
+# the API served it as an `official_curated` SourcedFact, so it read to a
+# consumer as verified government data.
+#
+# Before re-populating this file, one of these must be true:
+#   (a) Home Affairs resumes publishing per-occupation ceilings — re-source
+#       and record the real URL; or
+#   (b) the table is re-grained to 4-digit unit groups and sourced from the
+#       FOI release at reliability_tier = official_curated, accepting that
+#       it is a point-in-time disclosure with no update cadence; or
+#   (c) `issued` is derived from BP0068 (data.gov.au, CC-BY) instead. Note
+#       the FOI's issued-looking column is *prior-year grants in other
+#       subclasses* and must NOT be mapped to ceiling_usage.issued.
+#
+# The pipeline seeds 0 rows from this file and the API returns 200 with
+# null ceiling fields, which is the honest representation of what is known.
