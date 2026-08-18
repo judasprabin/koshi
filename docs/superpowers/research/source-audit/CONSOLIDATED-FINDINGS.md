@@ -133,23 +133,33 @@ constraint outright, since 485/500/482/186 are multi-stream. Stream also makes
 | Migrations | ✅ `0007` `eoi_rounds.occupation_name_raw` · `0008` `occupations.code_grain` |
 | **D3** name→code crosswalk | ✅ done — LIN-first, **139/140** rounds resolved live |
 | `occupations` re-sourced to ABS | ✅ done — JSA's browse UI carried 878 of 1,076 occupations; ABS Table 5 is authoritative |
-| **D2/D5** edition + stream migrations | ⬜ not started |
-| **D4** BP0068 ingestion | ⬜ not started |
+| Historical rounds backfilled | ✅ done — 4 archived rounds; **momentum now real** |
+| **D2** ANZSCO edition dimension | ✅ done — migration `0010`; every round resolves |
+| **D4** BP0068 ingestion | ✅ done — 622,425 records → 432 funnel rows |
+| **D5** stream key for `processing_times` | ⬜ deferred — the table does not exist yet; it lands with the source |
 
-**Verified live 2026-08-18:** `python -m koshi` exits 0 with 1,480 occupations,
-1,929 crosswalk entries and 140 rounds, and `GET /v1/occupations/253518`
-returns a real 100-point threshold carrying `official_scraped` provenance —
-koshi's first genuine end-to-end government data.
+**Verified live 2026-08-18** — `python -m koshi` exits 0:
 
-**Two known gaps at this state:**
+| Table | Rows |
+|---|---|
+| `occupations` | 1,485 (1,480 ANZSCO 2022 + 5 2013-only) |
+| `occupation_titles` | 1,929 |
+| `eoi_rounds` | 786 over 5 round dates — **0 unresolved** |
+| `occupation_momentum` | 140 |
+| `visa_subclasses` | 62 |
+| `application_funnel` | 432 (1,710,097 grants, 10 program years) |
 
-1. **Momentum still shows null**, but no longer for a schema reason: it needs
-   three rounds per occupation and only one round is published on the current
-   page. Backfilling from the `previous-rounds` source (catalog source 17,
-   19 rounds) is what closes it.
-2. **One occupation does not resolve** — Cabinetmaker (394111), carried by
-   LIN 19/051 under ANZSCO 2013 and absent from 2022. This is the genuine
-   edition split (open question #14), now a single instance rather than 23.
+Both earlier gaps are closed: momentum is real, and every round resolves.
+
+**What remains genuinely open:**
+
+1. **`processing_times` and its stream key (D5)** — the table does not exist
+   yet, so the migration lands with the source rather than ahead of it.
+2. **Open question #14** — whether `occupations` should key on
+   `(code, edition)`. The edition column defers the decision rather than
+   settling it; it will resurface with each new source.
+3. **17 of 23 catalogued sources** remain unbuilt, and the presentation layer
+   is untouched.
 
 ---
 
