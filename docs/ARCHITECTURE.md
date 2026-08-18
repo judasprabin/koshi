@@ -78,7 +78,7 @@ is meant.
 graph TB
     subgraph ingestion ["ETL pipeline — python -m koshi"]
         main_entry["__main__.py"]
-        pipeline["pipeline.py<br/>sync_anzsco_occupations<br/>sync_skillselect_rounds"]
+        pipeline["pipeline.py<br/>7 sync steps<br/>(occupations · crosswalk · rounds<br/>· history · grants · backfill)"]
         fetch["crawler/fetch.py<br/>fetch_and_register"]
         anzsco_p["extraction/<br/>anzsco_occupations.py"]
         rounds_p["extraction/<br/>skillselect_rounds.py"]
@@ -93,7 +93,7 @@ graph TB
         schemas["schemas/occupation.py<br/>Pydantic response models"]
     end
 
-    db[("Postgres<br/>5 tables")]
+    db[("Postgres<br/>9 tables")]
 
     main_entry --> pipeline
     pipeline --> fetch
@@ -126,23 +126,62 @@ a separate crawler repo + Notion). Returns `(page, changed, text)`. It does
 **not** know whether the page was successfully parsed — that's a separate
 concern, deliberately (§5).
 
-### `pipeline.py` — `sync_anzsco_occupations()`, `sync_skillselect_rounds()`
+### `pipeline.py` — the sync steps
 The orchestration layer: calls `fetch_and_register`, decides whether
 extraction is actually needed (`_needs_extraction`, §5), calls the right
 parser, dedups, persists, and — for EOI rounds — triggers a momentum
 refresh for every occupation a new round touched. This is the module that
 makes "the crawler feeds the parsers" true in code, not just in the design.
 
-### `extraction/anzsco_occupations.py`, `extraction/skillselect_rounds.py`
-Deterministic BeautifulSoup4/lxml parsers, one per known page shape. Each
-calls `require_provenance()` before constructing a single row — provenance
-is checked before data exists, not after. No LLM anywhere in this repo yet
-(design spec §5 describes a PDF tier and a Claude-fallback tier for pages
-that resist templating; neither is built — see §9).
+`python -m koshi` runs these in order, each isolated so one failure does not
+stop the rest:
+
+| Step | What it does |
+|---|---|
+| `sync_anzsco_occupations` | JSA listing, paginated (103 fetches, throttled) |
+| `sync_abs_occupations` | ABS Table 5 — the authoritative 1,076 occupations |
+| `sync_occupation_titles` | Name→code crosswalk from LIN 19/051 + ABS |
+| `sync_skillselect_rounds` | Current invitation round |
+| `sync_skillselect_previous_rounds` | Historical rounds — what makes momentum possible |
+| `sync_bp0068_grants` | Per-subclass grant counts + visa subclasses |
+| `backfill_unresolved_round_codes` | Retries rows the crosswalk could not resolve before |
+| `seed_ceiling_usage` | Reads the (currently empty) ceiling seed |
+
+The backfill step exists because an unchanged page is never re-parsed, so a
+row unresolved once would stay unresolved forever even as the crosswalk grew.
+
+### `extraction/` — one module per source shape
+Deterministic parsers. Each calls `require_provenance()` before constructing
+a single row — provenance is checked before data exists, not after. No LLM
+anywhere in this repo, and none needed: the 2026-08-17 audit established
+that no catalogued source requires PDF extraction, LLM extraction, or JS
+rendering.
+
+| Module | Handles |
+|---|---|
+| `homeaffairs.py` | Shared decoder for all 9 `immi.homeaffairs.gov.au` sources — their content is entity-encoded JSON in a hidden input, not HTML tables. Also holds the shape assertions. |
+| `skillselect_rounds.py` | Current invitation round (2-column table, found by heading) |
+| `skillselect_previous_rounds.py` | Round archive — different root *and* item key, and a column count that varies by round era |
+| `anzsco_occupations.py` | JSA Drupal card grid + its pager |
+| `abs_anzsco.py` | ABS `.xlsx` via stdlib `zipfile`/`ElementTree` |
+| `lin19051.py` | legislation.gov.au epub tables, addressed positionally with row-count assertions |
+| `bp0068.py` | Pivot-cache reader — 622,425 records streamed via `iterparse` |
+
+### `crosswalk.py` — `normalize_title()`, `resolve_occupation_code()`
+SkillSelect publishes occupation *names*, never ANZSCO codes, so this is what
+stands between a round and a populated `occupation_code`. Resolution is
+**LIN-first**: three titles resolve to different codes in the two sources, and
+LIN 19/051 is the binding instrument. Returns `None` rather than guessing.
 
 ### `seeds/loader.py` — `load_ceiling_usage_seed()`, `seed_ceiling_usage()`
-Occupation ceiling data comes from a periodic PDF report, not a scrapable
-table (design spec §4). Rather than build a PDF parser for two data points,
+⚠ **The ceiling seed is intentionally empty.** The audit established that
+per-occupation ceilings are **not published anywhere** at koshi's grain —
+`/skillselect/occupation-ceilings` is a 404 and the only real table is inside
+an FOI release as scanned images at 4-digit grain. Two rows previously shipped
+here citing a page that does not contain them; they were removed. The loader
+remains as the tier-5 curation mechanism.
+
+Historical note, retained because it explains the machinery:
 this slice ships a hand-curated, cited YAML file
 (`seeds/ceiling_usage_manual.yaml`) and a loader that validates and
 upserts it — the same `reliability_tier="official_curated"` honesty the
@@ -181,10 +220,24 @@ should," "you can," "you're eligible," "you qualify," "you will").
 
 ## 4. Data model
 
-Five tables. `source_pages` is metadata about pages, not a fact; the other
-four are fact tables and every one of them carries `source_url` /
-`retrieved_at` / `reliability_tier` (except `occupation_momentum`, which
-has no `source_url` — see §7).
+**Nine tables.** `source_pages` is metadata about pages, not a fact; the rest
+are fact tables and every one carries `source_url` / `retrieved_at` /
+`reliability_tier` (except `occupation_momentum`, which has no `source_url` —
+see §7).
+
+| Table | Rows (2026-08-18) | Notes |
+|---|---|---|
+| `occupations` | 1,485 | `code_grain` + `anzsco_edition`; 5 rows are ANZSCO-2013-only |
+| `occupation_titles` | 1,929 | Name→code crosswalk. **No FK** to `occupations` — it names codes that table lacks |
+| `eoi_rounds` | 786 | 5 round dates, 0 unresolved. Unique on the *name*, not the code |
+| `occupation_momentum` | 140 | Derived; no `source_url` |
+| `visa_subclasses` | 62 | From BP0068 |
+| `application_funnel` | 432 | `granted_count` only; `submitted_count` is permanently unavailable |
+| `ceiling_usage` | 0 | Intentionally empty — not published |
+| `source_pages` | 3 | Crawl registry |
+
+The ER diagram below shows the original occupation slice; the four newer
+tables are documented in the data-model doc.
 
 ```mermaid
 erDiagram

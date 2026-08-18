@@ -10,12 +10,28 @@
 > | **6** | Source catalog: 16 → **23**; nine entries re-tiered or re-sourced |
 > | **8** | **Tier decision tree rewritten** — it branched on "is it an HTML table?", and for every Home Affairs page the answer is *no*, which routed koshi's largest source family to PDF/manual extraction it never needed |
 > | **9** | Provider bake-off: **premise dissolved.** No source needs JS rendering, a managed provider, PDF or LLM extraction. Playwright can be dropped |
-> | **11** | New **§11.5 structural assertions** — the failure modes that survive row-level fault tolerance, including the 100%-skip-rate and soft-404 cases koshi hits *today* |
+> | **11** | New **§11.5 structural assertions** — the failure modes that survive row-level fault tolerance. The 100%-skip-rate case is now fixed in both parsers; the soft-404 helper exists but is not yet wired into the fetcher |
 > | **14** | Build order re-sequenced — the old order optimised for curation effort, which is no longer the binding constraint |
 > | **16** | Questions 1, 2, 12 closed; 5, 7 resolved; **14–18 added** |
 >
 > Evidence: `docs/superpowers/research/source-audit/`, summarised in
 > `CONSOLIDATED-FINDINGS.md`.
+>
+> ### 2026-08-18 (later) — Phase A complete, pipeline running
+>
+> §14's roadmap is now partly executed. **Phase A is done and BP0068 (Phase C
+> item 14) is done**; `python -m koshi` exits 0 and the API serves real
+> government data with provenance.
+>
+> Live state: 9 tables, 6 built sources, 11 migrations, 136 tests.
+> `occupations` 1,485 · `occupation_titles` 1,929 · `eoi_rounds` 786 (0
+> unresolved) · `occupation_momentum` 140 · `visa_subclasses` 62 ·
+> `application_funnel` 432.
+>
+> §11.5's structural assertions are **partly** implemented: shape, row-floor,
+> row-count and root/item-key assertions are live in the parsers; the
+> soft-404 body check is written (`homeaffairs.assert_not_soft_404`) but not
+> yet wired into the fetcher.
 
 **Status:** Canonical — single source of truth for koshi's architecture. This
 revision incorporates the re-architecture feedback from `feedback.md` while
@@ -1398,10 +1414,19 @@ flowchart TB
 
 ### Current State (Built Today)
 
-- 2 sources extracted (ANZSCO, SkillSelect rounds).
-- 5 tables populated (occupations, eoi_rounds, ceiling_usage, occupation_momentum, source_pages).
-- Manual curation seed pattern (ceiling_usage YAML).
+*(Updated 2026-08-18.)*
+
+- **6 sources extracted**: ANZSCO/JSA (paginated), SkillSelect current round,
+  SkillSelect round archive, ABS ANZSCO workbook, LIN 19/051, BP0068.
+- **9 tables**, 8 populated: occupations (1,485), occupation_titles (1,929),
+  eoi_rounds (786), occupation_momentum (140), visa_subclasses (62),
+  application_funnel (432), source_pages (3). `ceiling_usage` is
+  intentionally empty — the data is not published.
+- Manual curation seed pattern (retained; its one seed file is now empty).
 - Two-watermark anti-freeze mechanism.
+- Name→code crosswalk with LIN-first precedence.
+- Structural assertions in the parsers (shape, row floors, root/item keys).
+- 11 migrations, 136 tests, `python -m koshi` exits 0.
 - Provenance gate (`require_provenance`).
 - Serving API (`GET /v1/occupations`, `GET /v1/occupations/{code}`).
 - Zero fault tolerance (no retry, no logging, no per-row isolation).
@@ -1523,15 +1548,34 @@ versioned releases.
 > audit reclassified most of them to Tier 2, so the constraint is no longer
 > curation effort — it is **dependency order and source availability**.
 
-**Phase A — repair what exists** (nothing new; koshi currently serves no real
-occupation data):
+**Phase A — repair what exists** — ✅ **COMPLETE 2026-08-18**
 
-1. **Home Affairs hidden-field decoder** — one shared utility; unblocks 9 sources
-2. **SkillSelect parser** — 2-column fix + structural assertions (§11.5)
-3. **`occupation_titles` crosswalk** (C22) — LIN-first; unblocks `eoi_rounds`
-4. **ANZSCO re-source** to ABS Table 6, with `anzsco_edition`
+1. ✅ **Home Affairs hidden-field decoder** — `extraction/homeaffairs.py`;
+   unblocks 9 sources. Takes root key *and* item key explicitly: both vary.
+2. ✅ **SkillSelect parser** — 2-column fix + structural assertions (§11.5).
+   0 → 140 rows.
+3. ✅ **`occupation_titles` crosswalk** (C22) — LIN-first; 140/140 resolved.
+4. ✅ **ANZSCO re-source** — to ABS **Table 5**, not Table 6. Table 6 is the
+   coder list and includes non-occupations (`099960 Retired`), which makes it
+   right for name→code resolution and wrong for defining the occupation set.
+   Plus `anzsco_edition` (migration `0010`) and `code_grain` (`0008`).
 
-**Phase B — free wins, no new research required** (all verified, all Tier 2):
+**Phase A+ — not planned, forced by live runs.** Both were invisible to unit
+tests and only appeared against real sources:
+
+- **Pagination for the JSA listing.** One fetch returns 12 of 1,236
+  occupations; the pager needs 103 sequential fetches. This is what finally
+  wired up `resilience.Throttler`.
+- **Historical round backfill** (source 17). Momentum needs a trailing window
+  of three rounds and the current page publishes one, so the trend was null
+  regardless of how well the crosswalk worked.
+- **`backfill_round_codes` step.** A row unresolved once stayed unresolved
+  forever: the page hasn't changed, so it is never re-parsed, even though the
+  *crosswalk* may have grown since.
+
+**Phase B — free wins, no new research required** (all verified, all Tier 2,
+all still unbuilt). These are the cheapest remaining work: the decoder exists,
+so each needs a parser and a table, not investigation.
 
 5. Visa fees (`json_api`, 150 recs) → C21
 6. Processing times (`json_api`, 76 combos) — **after** the stream migration
@@ -1542,10 +1586,13 @@ occupation data):
 **Phase C — new domains, verified sources:**
 
 10. English bands (`F2025L00905`, rowspan-aware) → replaces the Home Affairs page
-11. Assessing bodies + join (LIN 19/051 T5/T6) — needs the abbreviation mapping
-12. Occupation list membership (C20) + `list_change_log` via OData
+11. Assessing bodies + join (LIN 19/051 T5/T6) — needs the abbreviation
+    mapping. **The extractor exists** (`extraction/lin19051.py` reads Table 6);
+    only the tables and sync are missing.
+12. Occupation list membership (C20) + `list_change_log` via OData. **The
+    extractor exists** (`parse_lin_occupation_lists`, verified 212/215/77).
 13. Skills priority (JSA, vocabulary now confirmed)
-14. BP0068 → `granted_count` + visa taxonomy
+14. ✅ **BP0068 → `granted_count` + visa taxonomy** — done, migration `0011`
 
 **Phase D — hardest, least sourced (deliberately last):**
 
@@ -1554,10 +1601,13 @@ occupation data):
 
 **Prerequisite migrations** (block Phases B and C):
 
-- `occupations`: `anzsco_edition` + code grain (F3, F9)
-- `processing_times`: stream key + percentile fields (F1) — the unique
-  constraint currently collides on 485/500/482/186
-- `visa_subclasses`: widen beyond 6 rows (F10)
+- ✅ `occupations`: `anzsco_edition` + code grain (F3, F9) — migrations
+  `0008` and `0010`
+- ⬜ `processing_times`: stream key + percentile fields (F1). **Not a
+  migration** — the table does not exist, so this lands *with* the source
+  rather than ahead of it.
+- ✅ `visa_subclasses`: widened beyond 6 rows (F10) — 62 from BP0068,
+  migration `0011`
 
 **Dropped or deferred**: `ceiling_usage` (not published — see 3b);
 `application_funnel.submitted_count` (not published); `points_distribution`
