@@ -20,6 +20,25 @@ every koshi source (`docs/superpowers/specs/2026-08-16-koshi-etl-architecture.md
 > Evidence: `docs/superpowers/research/source-audit/` — `agent1-page-audit.md`
 > (pages), `agent2-schema-mapping.md` (schema), `agent3-gap-search.md` (gaps),
 > summarised in `CONSOLIDATED-FINDINGS.md`.
+>
+> ### 2026-08-18 (later) — 6 of these sources are now built
+>
+> `VERIFIED` in this catalog means the page was fetched and decoded, not that
+> koshi ingests it. Six now have running extraction code:
+>
+> | # | Source | Module | Live volume |
+> |---|---|---|---|
+> | 1 | ANZSCO occupations (JSA) | `extraction/anzsco_occupations.py` | 1,236 over 103 paged fetches |
+> | 2 | EOI rounds (current) | `extraction/skillselect_rounds.py` | 140 rows |
+> | 9/13 | LIN 19/051 | `extraction/lin19051.py` | 504 pairs, 38 bodies |
+> | 16/21 | BP0068 | `extraction/bp0068.py` | 622,425 records → 432 rows |
+> | 17 | EOI previous rounds | `extraction/skillselect_previous_rounds.py` | 646 rows over 4 rounds |
+> | 18 | ABS ANZSCO workbook | `extraction/abs_anzsco.py` | 1,076 occupations + 1,425 titles |
+>
+> All nine Home Affairs sources share `extraction/homeaffairs.py`, so the
+> remaining ones need a parser, not a decoder.
+>
+> The other 17 entries are researched and **not built**.
 
 ## How to read this
 
@@ -38,7 +57,9 @@ One table per source. Each row records, for that source's live page(s):
 - **Cadence** — how often the page changes (drives the §9 cadence groups).
 - **Tier** — extraction tier (1 crawl, 2 deterministic, 3 PDF, 4 LLM, 5 manual).
 - **Feeds** — the Postgres table(s) the source populates.
-- **Status** — `VERIFIED` = content fetched **and decoded**, structure confirmed;
+- **Status** — `BUILT` = koshi has running extraction code for it (see the
+  build table below); `VERIFIED` = content fetched **and decoded**, structure
+  confirmed, but no code yet;
   `CONFIRMED` = URL returns 2xx but content unverified; `PROPOSED` = could not be
   verified live (reason in Notes); `DEAD` = does not serve what the catalog
   claimed. No URL below is fabricated.
@@ -59,9 +80,15 @@ Applies to sources 2, 3, 4, 5, 6, 7, 8, 15, 17. Raw HTML contains **zero
 <input id="ctl00_PlaceHolderMain_PageSchemaHiddenField_Input" value="...">
 ```
 
-Decode: `html.unescape(value)` → `json.loads` → walk the root key
-(`content[].block`, or `criteria` on `previous-rounds`). No JS rendering and no
-headless browser is required for any of them.
+Decode: `html.unescape(value)` → `json.loads` → walk the root key, then the
+per-item HTML key. **Both axes vary**: most pages are `content[].block`;
+`previous-rounds` is `criteria[].description`. No JS rendering and no headless
+browser is required for any of them.
+
+Implemented once in `src/koshi/extraction/homeaffairs.py`, which takes both
+keys as explicit arguments and raises rather than returning empty when either
+is absent — a silent zero-row extraction is the failure this module exists to
+end.
 
 ---
 
@@ -75,7 +102,7 @@ headless browser is required for any of them.
 | Cadence | Near-static (ANZSCO version changes every few years) |
 | Tier | 2 (deterministic) |
 | Feeds | `occupations` — code, name, unit_group |
-| Status | **VERIFIED** — page live; **superseded as the code/title source** |
+| Status | ✅ **BUILT** (`extraction/anzsco_occupations.py`) — paginated; superseded by source 18 as the authoritative code/title source |
 
 Notes: This is the already-built source (`pipeline.py:36` `ANZSCO_URL`).
 
@@ -107,7 +134,7 @@ Notes: This is the already-built source (`pipeline.py:36` `ANZSCO_URL`).
 | Cadence | ~monthly (a new row per invitation round) |
 | Tier | 2 (deterministic) |
 | Feeds | `eoi_rounds` — threshold_points, round_date |
-| Status | **VERIFIED** — decoded, 4 tables found |
+| Status | ✅ **BUILT** (`extraction/skillselect_rounds.py`) — 140 rows, 0 skipped |
 
 Notes: Already built (`pipeline.py:37` `SKILLSELECT_ROUNDS_URL`), and **the
 built parser extracts zero rows.** Two independent reasons:
@@ -357,7 +384,7 @@ related instruments are:
 | Cadence | A few times per year (amendments re-specify list membership) |
 | Tier | 2 (deterministic) |
 | Feeds | `occupation_assessing_bodies`, `assessing_bodies`, list membership, `list_change_log` |
-| Status | **VERIFIED** — tables located and row-counted |
+| Status | ✅ **BUILT** (`extraction/lin19051.py`) — positional tables with row-count assertions |
 
 Notes: **Research method** — searched the Federal Register of Legislation for
 "Specification of Occupations and Assessing Authorities". The only currently
@@ -508,7 +535,7 @@ VIC's occupation list lives under the Cloudflare-blocked `liveinmelbourne.vic.go
 | Cadence | Rare (bodies change infrequently) |
 | Tier | 2 (deterministic) — was catalogued tier 5 |
 | Feeds | `assessing_bodies` — body_name; `occupation_assessing_bodies` — join |
-| Status | **VERIFIED** — replaces MARA |
+| Status | ✅ **BUILT** (`extraction/lin19051.py` Table 6) — replaces MARA |
 
 ~~`https://portal.mara.gov.au/search-the-register-of-migration-agents/`~~ —
 **wrong authority, do not use.**
@@ -633,20 +660,36 @@ Sources 17–23 were not in the original catalog. All are content-verified.
 |---|---|
 | URL | `https://immi.homeaffairs.gov.au/visas/working-in-australia/skillselect/previous-rounds` |
 | Content type | **hidden-field JSON** |
-| Retrieval | Hidden-input decode, root key **`criteria`** — *not* `content` |
+| Retrieval | Hidden-input decode, root key **`criteria`**, item key **`description`** — *not* `content`/`block` |
 | Cadence | ~monthly (appended per round) |
 | Tier | 2 (deterministic) |
 | Feeds | `eoi_rounds` — historical backfill |
-| Status | **VERIFIED** — 19 rounds, 1,419 rows |
+| Status | ✅ **BUILT** (`extraction/skillselect_previous_rounds.py`) — see the correction below |
 
-Notes: Supplies **19 rounds of history** where source 2 gives only the current
-one — the difference between a point reading and a trend.
+Notes: Supplies history where source 2 gives only the current round — the
+difference between a point reading and a trend.
 
-⚠ **This page uses a different JSON root key (`criteria`) from every other Home
-Affairs page (`content`).** A parser hard-coding `content` raises `KeyError`
-here. This is why the root key must be stored per resource in
-`extraction_strategies`, not assumed globally. Independently re-verified
-2026-08-18.
+⚠ **Correction to the audit's figure.** The audit recorded "19 rounds, 1,419
+rows". Building it showed only **4 of the 19 rounds carry an occupation
+table** at all (144, 131, 161 and 149 rows = 585); the other 15 publish
+summary figures only. The 1,419 count included those summary tables. koshi
+extracts **646 rows** from the 4, because recent rounds publish one column
+*per subclass* and a single occupation row yields up to two EOI rows.
+
+⚠ **The table's shape varies by round**: recent rounds are
+`Occupation | 189 | 491`, older ones a single score column with the subclass
+named in the header or only in the round-summary table. A fixed column count
+drops one era or the other. `N/A*` means not invited in that subclass.
+
+⚠ **Two independent key differences, not one.** The root key is `criteria`
+rather than `content`, *and* each item carries its HTML under `description`
+rather than `block`. The audit found the first; building it found the second.
+A parser hard-coding either raises. Both are configured per resource in
+`extraction_strategies`, never sniffed.
+
+The round date is on the item (`title`) and is authoritative: the HTML
+heading's `id` is stale on the live page — `id="invitations-issued-13062024"`
+sits above text reading "13 November 2025".
 
 ---
 
@@ -660,7 +703,7 @@ here. This is why the root key must be stored per resource in
 | Cadence | Per ANZSCO edition (rare) |
 | Tier | 2 (deterministic, structured file) |
 | Feeds | `occupations` — code, name; the crosswalk in source 20 |
-| Status | **VERIFIED** — 1,425 pairs |
+| Status | ✅ **BUILT** (`extraction/abs_anzsco.py`) — Table 6 for titles, Table 5 for occupations |
 
 Notes: The authoritative ANZSCO code↔title list. Resolves **132 of 140** live
 SkillSelect occupation names on its own — see source 20 for why that is not
@@ -729,7 +772,7 @@ Two hazards:
 | Cadence | Annual |
 | Tier | 2 (deterministic, structured file) |
 | Feeds | `application_funnel.granted_count`; `visa_subclasses` taxonomy; `ceiling_usage.issued` if re-sourced |
-| Status | **VERIFIED** — 622,425 records; licence **CC-BY 2.5**; byte size independently re-confirmed 2026-08-18 |
+| Status | ✅ **BUILT** (`extraction/bp0068.py`) — 622,425 records parsed in ~4.7s; CC-BY 2.5 |
 
 Notes: **The single largest addition this audit makes.** Home Affairs-published,
 CC-BY, annually refreshed:
@@ -843,7 +886,8 @@ data problem), or *unreached* (real work left).
 | Metric | Count |
 |---|---|
 | Sources catalogued | **23** (was 16) |
-| **VERIFIED** (content fetched and decoded) | 19 |
+| **BUILT** (running extraction code) | **6** |
+| **VERIFIED** (content fetched and decoded, not built) | 13 |
 | **PROPOSED** (blocked at the network edge) | 1 — VIC |
 | **DEAD** (does not serve what was claimed) | 2 — occupation-ceilings (404), budget migration page (soft-404) |
 | Entries materially corrected | **9 of the original 16** |
