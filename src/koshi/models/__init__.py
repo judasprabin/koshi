@@ -8,10 +8,12 @@ added under koshi/models/.
 """
 
 from koshi.models import (  # noqa: F401
+    application_funnel,
     ceiling_usage,
     eoi_rounds,
     occupation_momentum,
     occupation_titles,
     occupations,
     source_pages,
+    visa_subclasses,
 )

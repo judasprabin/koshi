@@ -17,15 +17,18 @@ from koshi.extraction.abs_anzsco import (
     parse_abs_occupations,
     parse_abs_titles,
 )
+from koshi.extraction.bp0068 import parse_bp0068_grants
 from koshi.extraction.lin19051 import parse_lin_titles
 from koshi.extraction.skillselect_previous_rounds import (
     parse_skillselect_previous_rounds,
 )
 from koshi.extraction.skillselect_rounds import parse_skillselect_rounds
+from koshi.models.application_funnel import ApplicationFunnel
 from koshi.models.eoi_rounds import EoiRound
 from koshi.models.occupation_titles import OccupationTitle
 from koshi.models.occupations import Occupation
 from koshi.models.source_pages import SourcePage
+from koshi.models.visa_subclasses import VisaSubclass
 from koshi.momentum import refresh_momentum
 from koshi.resilience import Throttler
 
@@ -59,6 +62,11 @@ SKILLSELECT_PREVIOUS_ROUNDS_URL = (
 LIN19051_URL = (
     "https://www.legislation.gov.au/F2019L00278/2026-03-28/2026-03-28"
     "/text/original/epub/OEBPS/document_1/document_1.html"
+)
+BP0068_URL = (
+    "https://data.gov.au/data/dataset/096fd157-807c-4ba0-8c63-0754cae4ba35/resource/"
+    "832fe752-f672-4ce7-a5bc-bada2270496c/download/"
+    "bp0068-migration-and-child-outcome-since-2015-16-to-2025-06-30-masked-v100.xlsx"
 )
 ABS_ANZSCO_URL = (
     "https://www.abs.gov.au/statistics/classifications/"
@@ -407,6 +415,68 @@ def _persist_rounds(session: Session, rounds: list[EoiRound]) -> list[EoiRound]:
         staged_keys.add(key)
         new_rounds.append(round_)
     return new_rounds
+
+
+def sync_bp0068_grants(
+    session: Session, *, url: str = BP0068_URL, client: httpx.Client | None = None
+) -> list[ApplicationFunnel]:
+    """Load per-subclass, per-year grant counts from BP0068.
+
+    Populates `application_funnel.granted_count`, which the design had
+    expected to ship NULL. Also seeds `visa_subclasses`, which the funnel
+    needs as an FK parent and which nothing else in koshi supplied.
+
+    Upserts by (visa_code, program_year): the dataset is republished
+    annually with prior years restated, so a re-run must update rather than
+    duplicate.
+    """
+    retrieved_at = dt.datetime.now(dt.timezone.utc)
+    workbook = fetch_bytes(url, domain="data.gov.au", category="bp0068", client=client)
+    result = parse_bp0068_grants(workbook)
+
+    for code, name, category in sorted(
+        {(r.visa_code, r.visa_name, r.visa_category) for r in result.rows}
+    ):
+        session.merge(
+            VisaSubclass(
+                code=code, name=name, visa_category=category,
+                source_url=url, retrieved_at=retrieved_at,
+                reliability_tier="official_scraped",
+            )
+        )
+    session.flush()  # subclasses must exist before the funnel's FK is checked
+
+    written: list[ApplicationFunnel] = []
+    for row in result.rows:
+        existing = session.scalar(
+            select(ApplicationFunnel).where(
+                ApplicationFunnel.visa_code == row.visa_code,
+                ApplicationFunnel.program_year == row.program_year,
+            )
+        )
+        if existing is None:
+            record = ApplicationFunnel(
+                visa_code=row.visa_code,
+                program_year=row.program_year,
+                granted_count=row.granted_count,
+                source_url=url,
+                retrieved_at=retrieved_at,
+                reliability_tier="official_scraped",
+            )
+            session.add(record)
+            written.append(record)
+        elif existing.granted_count != row.granted_count:
+            existing.granted_count = row.granted_count
+            existing.retrieved_at = retrieved_at
+            written.append(existing)
+    session.commit()
+    logger.info(
+        "bp0068: %d records -> %d funnel rows (%d written)",
+        result.record_count, len(result.rows), len(written),
+    )
+    rows = _RowsWithSkipCount(written)
+    rows.skipped = result.skipped
+    return rows
 
 
 def backfill_unresolved_round_codes(session: Session) -> list[EoiRound]:
