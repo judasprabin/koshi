@@ -1,11 +1,37 @@
 # koshi — Complete Data Model
 
 **Status:** Canonical (single source of truth for every koshi table)
-**Date:** 2026-08-16
+**Date:** 2026-08-16 · **Revised 2026-08-18** after the three-agent source audit
 **Author:** Prabin Karki (assembled from `feedback.md` control/data-plane specs, `2026-08-16-koshi-etl-architecture.md` §6, and `2026-08-15-koshi-etl-finalization-design.md` §4)
 
 > This document models **every entity** across the control plane, data/execution plane, and the 18 domain fact tables.
 > Sources: `docs/superpowers/specs/feedback.md` (target architecture), `docs/superpowers/specs/2026-08-16-koshi-etl-architecture.md` §6 (domain tables), `docs/superpowers/specs/2026-08-15-koshi-etl-finalization-design.md` §4 (domain definitions).
+
+> ### 2026-08-18 revision
+>
+> This model was designed against assumptions about what the source pages
+> contain. The 2026-08-17 audit fetched them. Where the two disagree, **the
+> pages win** — every change below is traceable to fetched content, cited in
+> `docs/superpowers/research/source-audit/`.
+>
+> **Four findings change the shape of the model, not just its column list:**
+>
+> 1. **`occupations.code` is not one key space.** Sources disagree on both
+>    *width* (4-digit unit group vs 6-digit occupation) and *edition* (ANZSCO
+>    2013, ANZSCO 2022 and OSCA are all simultaneously live). It is the FK
+>    anchor for 7 tables, so this propagates everywhere.
+> 2. **The stream dimension is missing entirely.** Processing times and fees are
+>    published per subclass **and stream**. `processing_times`' unique constraint
+>    collides outright on 485/500/482/186.
+> 3. **Provenance can be present and false.** Two `ceiling_usage` rows passed
+>    `require_provenance` while citing a page that does not contain them —
+>    the check tests non-null, not truth.
+> 4. **Several columns have no source at all** and never will. They are marked
+>    **NO SOURCE** below and should ship NULL or be dropped, not left looking
+>    like pending work.
+>
+> Each affected table carries an **`⚠ Audit`** block. Findings are referenced as
+> I*n* (integrity), F*n* (forced change) and G*n* (gap) per the agent files.
 
 ---
 
@@ -46,7 +72,13 @@
    - [C16. application_funnel](#c16-application_funnel)
    - [C17. eligibility_requirements](#c17-eligibility_requirements)
    - [C18. skills_priority_ratings](#c18-skills_priority_ratings)
-7. [Provenance & Derived Conventions](#provenance--derived-conventions)
+7. [C19–C22. Entities added by the 2026-08-17 audit](#c19c22-entities-added-by-the-2026-08-17-audit)
+   - [C19. anzsco_osca_crosswalk](#c19-anzsco_osca_crosswalk)
+   - [C20. occupation_list_membership](#c20-occupation_list_membership)
+   - [C21. visa_fees](#c21-visa_fees)
+   - [C22. occupation_titles](#c22-occupation_titles)
+8. [Provenance & Derived Conventions](#provenance--derived-conventions)
+   - [The verified-citation rule](#the-verified-citation-rule-added-2026-08-18)
 
 ---
 
@@ -428,10 +460,10 @@ The control plane defines **what should happen** — configuration, policies, sc
 |---|---|---|---|
 | `strategy_id` | `TEXT` | NOT NULL | **PK** |
 | `resource_id` | `TEXT` | NOT NULL | **FK** → `resources.resource_id` |
-| `strategy_type` | `TEXT` | NOT NULL | `CHECK (strategy_type IN ('html_table','pdf_parser','semantic_extraction','api_parser'))` |
+| `strategy_type` | `TEXT` | NOT NULL | `CHECK (strategy_type IN ('hidden_field_json','json_api','html_table','xlsx_pivot_cache','epub_table_positional','pdf_parser','semantic_extraction','api_parser'))` |
 | `provider` | `TEXT` | NOT NULL | `CHECK (provider IN ('custom','firecrawl','apify','zyte','llm'))` |
 | `priority` | `INTEGER` | NOT NULL, `1` | Fallback order (1 = primary) |
-| `config` | `JSONB` | NOT NULL, `'{}'` | Provider-specific config: CSS selectors, LLM prompt, schema mapping |
+| `config` | `JSONB` | NOT NULL, `'{}'` | Strategy-specific config — see the required keys below |
 | `enabled` | `BOOLEAN` | NOT NULL, `true` | — |
 | `created_at` | `TIMESTAMPTZ` | NOT NULL, `now()` | — |
 
@@ -439,6 +471,37 @@ The control plane defines **what should happen** — configuration, policies, sc
 - `extraction_strategies.resource_id` → `resources.resource_id`
 
 **Source reference:** N/A — control-plane configuration. Models the quality-aware fallback chain described in `feedback.md` §2.2.
+
+> **⚠ Audit (F12) — the original `strategy_type` vocabulary described none of
+> koshi's actual sources.**
+>
+> It offered `html_table | pdf_parser | semantic_extraction | api_parser`. In
+> reality **no** `immi.homeaffairs.gov.au` page serves an HTML table, no koshi
+> source is a PDF, and the two richest sources are a JSON API and an XLSX pivot
+> cache. Every Home Affairs page would have been mis-typed as `html_table` and
+> parsed for markup that does not exist.
+>
+> **Four values added**, each matching a real, verified delivery mechanism:
+>
+> | `strategy_type` | Used by | Required `config` keys |
+> |---|---|---|
+> | `hidden_field_json` | Sources 2, 3, 4, 5, 6, 7, 8, 15, 17 | **`json_root_key`**, `hidden_input_id` |
+> | `json_api` | Fees (`GetPriceList`), processing times (`GetProcessGuide*`) | `method`, `endpoint`, `payload` |
+> | `xlsx_pivot_cache` | BP0068 | `pivot_cache_index`, `field_map` |
+> | `epub_table_positional` | LIN 19/051, `F2025L00905` | **`table_index`**, `iframe_hop`, `rowspan_aware` |
+>
+> **`json_root_key` is load-bearing, not cosmetic.** Home Affairs pages do not
+> use one key: main pages use `content`, `previous-rounds` uses `criteria`. A
+> parser hard-coding either raises `KeyError` on the other. Storing it per
+> resource is the reason this column exists.
+>
+> **`table_index` is a breaking-change risk.** LIN 19/051's 12 epub tables carry
+> no `id` or `class`, so they can only be addressed positionally. The strategy
+> should also assert an expected row count (Table 5 = 504, Table 6 = 38) so a
+> re-ordered document fails loudly instead of silently loading the wrong table.
+>
+> **`rowspan_aware` matters for `F2025L00905`**, whose Schedule 2 table uses 12
+> `rowspan` attributes; naive `td`-indexing misaligns the Superior band rows.
 
 ---
 
@@ -676,6 +739,40 @@ These 18 tables are the Silver/Gold normalized output — the actual sourced fac
 
 **Status:** ✅ Built (migration `0001`).
 
+> **⚠ Audit (F3, F9, I1) — this table's PK is doing three jobs at once and can
+> only do one.** It anchors 7 FKs, so every problem here propagates.
+>
+> **1. Width.** Sources join at different grains: **NSW** and the FOI ceilings
+> at **4-digit** unit groups; **QLD** and **LIN 19/051** at **6-digit**; **JSA**
+> mixes both. A single-width PK silently fails to join roughly half of them.
+>
+> **2. Edition — three are simultaneously live.**
+>
+> | Instrument / source | ANZSCO edition |
+> |---|---|
+> | `F2024L01616` (ANZSCO Definition — pins migration) | **2013** |
+> | LIN 19/051 (the binding occupation instrument) | **2013** |
+> | `F2024L01618` (CSOL) | **2022** (100% match) |
+> | JSA | dual-publishes ANZSCO **and OSCA** |
+>
+> **25 of LIN 19/051's codes are absent from ANZSCO 2022.** Without an edition
+> column those rows look like bad data rather than a different vocabulary.
+>
+> **3. ANZSCO is being retired** in favour of **OSCA** (1,577 entries vs
+> ANZSCO's 1,236).
+>
+> **Recommended changes:**
+>
+> | Change | Rationale |
+> |---|---|
+> | Add `anzsco_edition TEXT NOT NULL` | Three editions are live; without it the PK is ambiguous |
+> | Add `code_grain TEXT` (`unit_group` \| `occupation`) | Makes the 4- vs 6-digit join explicit instead of implied |
+> | **Keep ANZSCO as PK** — do *not* migrate to OSCA | The binding instrument and every state list are ANZSCO-coded; migrating would break the join to the authority that legally matters |
+> | Add `anzsco_osca_crosswalk` table (see C19) | Carries the OSCA relationship without a destructive migration |
+>
+> **Source correction:** the JSA browse page is *not* where code+title lives.
+> Use the **ABS structure workbook Table 6** (1,425 pairs) — catalog source 18.
+
 ---
 
 ### C2. eoi_rounds
@@ -701,7 +798,37 @@ These 18 tables are the Silver/Gold normalized output — the actual sourced fac
 
 **Source reference:** SkillSelect invitation rounds → `eoi_rounds` + `application_funnel` (submitted/invited counts). Scraped from `https://immi.homeaffairs.gov.au/visas/working-in-australia/skillselect/invitation-rounds`. Tier 2 (deterministic HTML).
 
-**Status:** ✅ Built (migration `0002`).
+**Status:** ✅ Built (migration `0002`) — **but the parser extracts zero rows.**
+
+> **⚠ Audit (I1, BLOCKER) — the FK cannot be populated from the source.**
+>
+> The source table (decoded Table B) publishes occupation **names** —
+> "Actuary", "Agricultural Consultant", "Carpenter" — and **never ANZSCO
+> codes**. `occupation_code` is an FK to `occupations.code`. There is no
+> selector fix for this; it needs a name→code crosswalk.
+>
+> **Resolution (G1, FOUND):** the union of ABS Table 6 (1,425 pairs) and
+> LIN 19/051 Table 5 (504 pairs) resolves **140/140** live names. Neither alone
+> suffices — each resolves only 132/140. Lookup must be **LIN-first**: three
+> titles (**Management Consultant**, **Plumber (General)**, **Statistician**)
+> resolve to *different codes* in the two sources, and LIN 19/051 is the binding
+> instrument. An ABS-first implementation returns wrong codes without erroring.
+>
+> **Recommended changes:**
+>
+> | Change | Rationale |
+> |---|---|
+> | Add `occupation_name_raw TEXT NOT NULL` | Preserve what the source actually published; makes crosswalk failures visible and re-resolvable |
+> | Keep `occupation_code` nullable | It is now a *derived* join, and 0 of 140 names carry a code natively |
+> | **`invitations_issued` — NO SOURCE at this grain** | Table B has only 2 columns (`Occupation | minimum score`). Invitation counts live in decoded Tables A and C at round/subclass grain, not per occupation |
+>
+> **Parser bug:** `extraction/skillselect_rounds.py:49` unpacks **3** cells from
+> a **2**-column table, so every row raises `ValueError`, is caught, and is
+> skipped. The 100% skip rate currently exits cleanly — it should be a hard
+> failure.
+>
+> **Backfill:** catalog source 17 (`previous-rounds`, root key `criteria`)
+> supplies **19 rounds / 1,419 rows** of history.
 
 ---
 
@@ -726,9 +853,44 @@ These 18 tables are the Silver/Gold normalized output — the actual sourced fac
 **Relationships:**
 - `ceiling_usage.occupation_code` → `occupations.code`
 
-**Source reference:** Occupation ceilings PDF (planning-levels report) → `ceiling_usage` + `program_allocation`. Tier 5 (manual YAML curation from PDF report).
+**Source reference:** ~~Occupation ceilings PDF (planning-levels report)~~ — **the cited source does not contain this data.** See the audit block.
 
-**Status:** ✅ Built (migration `0003`).
+**Status:** ⚠ Built (migration `0003`) — **table exists, deliberately empty.**
+
+> **⚠ Audit (I3, D1, BLOCKER) — this table has no source, and shipped
+> fabricated data until 2026-08-18.**
+>
+> Two seeded rows (261313 → 3200/5000, 254499 → 1800/4000) cited the
+> planning-levels page. That page was decoded in full: it contains a
+> **visa-category table only, no per-occupation ceilings**, and — contrary to
+> this entry's own "PDF report" description — **has no PDFs on it at all**.
+>
+> Per-occupation ceilings are **not routinely published anywhere**:
+>
+> | Check | Result |
+> |---|---|
+> | `/skillselect/occupation-ceilings` | **HTTP 404** (re-verified 2026-08-18) |
+> | Live SkillSelect ceilings section | 599 bytes of prose, zero tables |
+> | data.gov.au SkillSelect/EOI dataset | none exists |
+> | FOI release `fa-260100545` | **the only** PY2025-26 table — scanned images, **4-digit** grain |
+>
+> **Why this matters beyond one table:** those rows passed `require_provenance`
+> because `source_url` and `retrieved_at` were non-null. The check tests
+> *presence*, not *truth*. The API served them as `official_curated`
+> `SourcedFact`s, indistinguishable from verified government data. See the
+> Provenance section's new **verified-citation rule**.
+>
+> The rows were removed in `fix: remove unsourced ceiling_usage seed rows`; the
+> seed file is now comment-only and documents its own repopulation conditions.
+>
+> **Options, in preference order:**
+>
+> 1. **Retire the table.** The data does not exist at 6-digit grain.
+> 2. **Re-grain to 4-digit** and source from the FOI release, accepting a
+>    point-in-time disclosure with no update cadence.
+> 3. **Derive `issued` from BP0068** (C16's source). ⚠ Do **not** map the FOI's
+>    issued-looking column here — it is *prior-year grants in other subclasses*,
+>    a different quantity entirely.
 
 ---
 
@@ -814,6 +976,35 @@ These 18 tables are the Silver/Gold normalized output — the actual sourced fac
 
 **Source reference:** Visa subclass static facts (189/190/491/485/500/482) → `visa_subclasses` (6 rows, rare cadence). Tier 5 (manual YAML curation). `base_application_cost` updated from visa-fees page (Tier 2, update-by-PK) — see open design question #5 in `2026-08-16-koshi-etl-architecture.md` §13.
 
+> **⚠ Audit (I4, F10) — 6 rows cannot parent children carrying 76 and 150
+> records.**
+>
+> | Source | Records | Child table |
+> |---|---|---|
+> | Processing-times API | **76** subclass × stream combos | `processing_times` |
+> | Fee API | **150** fee records | `base_application_cost` |
+> | BP0068 | **62** subclasses with grants | `application_funnel` |
+> | **This table** | **6** | — |
+>
+> Every FK from those children into a 6-row parent fails for the majority of
+> rows. Either widen this table or narrow the children — but the current shape
+> cannot hold.
+>
+> **The self-FK example in this doc is itself broken:** the canonical
+> `491 → 191` onward-pathway example targets a row that does not exist in a
+> 6-row table.
+>
+> **Recommended changes:**
+>
+> | Change | Rationale |
+> |---|---|
+> | Widen to the BP0068 5-level taxonomy (Program → Category → Type → Sub-type → Subclass) | The only verified structured visa taxonomy found |
+> | Add a **stream** dimension | Fees and processing times are both per-stream; without it `base_application_cost` is ambiguous |
+> | `permanence` — **NO SOURCE** | Not published as structured data anywhere found (G5). Ship NULL or curate manually and mark `official_curated` |
+>
+> Caveat: BP0068's 62 subclasses are only those **with grants**, so it is a
+> lower bound on a complete registry, not a registry.
+
 **Status:** Target (migration `0007`).
 
 ---
@@ -839,7 +1030,28 @@ These 18 tables are the Silver/Gold normalized output — the actual sourced fac
 
 **Relationships:** None — standalone reference table.
 
-**Source reference:** English test score pages → `english_test_bands`. Scraped from the Home Affairs English language requirements page. Tier 2 (deterministic HTML).
+**Source reference:** ~~Home Affairs English language requirements page~~ → **`F2025L00905` (LIN 25/016) Schedule 2 + `F2025L00904`**. Tier 2 (`epub_table_positional`, rowspan-aware).
+
+> **⚠ Audit (F5, G3) — was BLOCKER, now resolved by re-sourcing.**
+>
+> The catalogued Home Affairs English page has **zero tables** — it is prose
+> only and cannot feed this table. The data is in legislation instead:
+>
+> | Instrument | Supplies |
+> |---|---|
+> | **`F2025L00905`** Sch. 2 | **4 bands × 9 tests × 4 skills** — Vocational / Competent / Proficient / Superior |
+> | **`F2025L00904`** | Functional English, 8 tests |
+>
+> This gives per-skill score thresholds per test, which is exactly the grain the
+> table needs.
+>
+> ⚠ **Parser hazard:** Schedule 2's table uses **12 `rowspan` attributes**.
+> Naive `td`-indexing misaligns the **Superior** rows — it will attribute wrong
+> scores to the wrong band *silently*, producing plausible-looking bad data.
+> The extraction strategy must set `rowspan_aware`.
+>
+> Note `/points-table` supplies only band→points for 3 bands, which is a
+> different and much coarser thing than the per-test score matrix here.
 
 **Status:** Target (migration `0008`).
 
@@ -861,7 +1073,21 @@ These 18 tables are the Silver/Gold normalized output — the actual sourced fac
 **Relationships:**
 - `assessing_bodies.body_name` ← `occupation_assessing_bodies.body_name` (FK)
 
-**Source reference:** MARA / assessing body pages → `assessing_bodies`. Tier 5 (manual YAML curation, domain: `mara.gov.au`).
+**Source reference:** ~~MARA~~ → **LIN 19/051 (`F2019L00278`) epub Table 6** — 38 bodies. Tier 2 (`epub_table_positional`).
+
+> **⚠ Audit (F2) — MARA is the wrong authority.**
+>
+> MARA registers **migration agents**, not **skills assessing authorities**
+> (Engineers Australia, ACS, VETASSESS, CPA, ANMAC, …). The correct source is
+> LIN 19/051, which specifies "Relevant Assessing Authorities": **Table 6** is
+> the 38-row body key, **Table 5** the 504-row occupation join (C9).
+>
+> **`turnaround_estimate` and `cost` — NO SOURCE (G8).** No aggregated
+> publication exists; the data lives on each of ~38 bodies' own sites. Ship
+> NULL rather than commit to 38 separate scrapers.
+>
+> Since `body_name` is the PK, note the abbreviation-vs-full-name mismatch
+> documented in C9 — it determines what this PK's values actually are.
 
 **Status:** Target (migration `0009`).
 
@@ -885,7 +1111,23 @@ These 18 tables are the Silver/Gold normalized output — the actual sourced fac
 - `occupation_assessing_bodies.occupation_code` → `occupations.code`
 - `occupation_assessing_bodies.body_name` → `assessing_bodies.body_name`
 
-**Source reference:** MARA / assessing body pages → `occupation_assessing_bodies`. Tier 5 (manual YAML curation, domain: `mara.gov.au`).
+**Source reference:** ~~MARA~~ → **LIN 19/051 (`F2019L00278`) epub Table 5** — 504 rows. Tier 2 (`epub_table_positional`).
+
+> **⚠ Audit (F2) — the join data exists, but two things break a naive load.**
+>
+> **1. The two tables key bodies differently.** Table 5 names bodies by
+> **abbreviation**; Table 6 keys them by **full name**. A raw string compare
+> between this table's FK and `assessing_bodies.body_name` will not match —
+> an explicit abbreviation↔name mapping is required, and it is not published as
+> a third table.
+>
+> **2. Some occupations specify "either body"** — a disjunction. A plain
+> `(occupation_code, body_name)` row cannot express "either A or B". Flattening
+> it into two independent rows asserts that *both* are valid, which misstates
+> the requirement; dropping one loses information. This needs either a
+> `requirement_group` column or an explicit `alternative_of` relationship.
+>
+> Table 5's 504 rows also serve as half of the name→code crosswalk (C2, G1).
 
 **Status:** Target (migration `0010`).
 
@@ -992,6 +1234,28 @@ These 18 tables are the Silver/Gold normalized output — the actual sourced fac
 **Relationships:**
 - `list_change_log.occupation_code` → `occupations.code`
 
+> **⚠ Audit (I12, F4, G7) — a change log with no source for `change_type` or
+> `effective_date` produces zero rows on a cold start.**
+>
+> This table records *transitions*, but the register publishes *compilations* —
+> point-in-time membership snapshots. With nothing to diff against, a first run
+> has no changes to record, so the table starts empty and stays empty until a
+> second compilation happens to land.
+>
+> **Resolved (G7, FOUND):** the **legislation.gov.au OData API** (catalog source
+> 23) enumerates LIN 19/051's full **7-version compilation history** with
+> effective dates and amendment reasons. Diff successive compilations to
+> synthesise change rows, and take `effective_date` from the API directly rather
+> than inferring it.
+>
+> **Still unopened:** LIN 19/051 epub **tables 7–11** are the instrument's own
+> amendment history and may supply per-amendment effective dates without any
+> diffing at all. Worth checking before building the diff machinery.
+>
+> **Missing companion table (F4):** current *membership* of MLTSSL (212), STSOL
+> (215) and ROL (77) has **nowhere to land** — this change log is the only
+> occupation-list table in the model. See C20.
+
 **Source reference:** 
 - Legislation.gov.au (MLTSSL/STSOL/ROL changes) → `list_change_log`. Tier 2 (deterministic HTML — HTML structure must be confirmed at build time, open design question #1).
 - State occupation list change pages → `list_change_log`. Tier 1→5 (`source_pages` hash-diff triggers human review, YAML seed writes). 
@@ -1019,7 +1283,28 @@ These 18 tables are the Silver/Gold normalized output — the actual sourced fac
 **Relationships:**
 - `processing_times.visa_code` → `visa_subclasses.code`
 
-**Source reference:** Processing times page → `processing_times`. Scraped from `https://immi.homeaffairs.gov.au/visas/getting-a-visa/visa-processing-times`. Tier 2 (deterministic HTML, same shape as SkillSelect parser).
+**Source reference:** Processing times → `processing_times`, via the **`GetProcessGuideVisas` / `GetProcessGuideInfo` JSON API**. Tier 2 (`json_api`) — no HTML parsing.
+
+> **⚠ Audit (F1, I-series) — two independent breaks, one of them a hard
+> constraint violation.**
+>
+> **1. There is no median.** The API returns a **percentile distribution**, not
+> a single figure. `median_days` has no corresponding source field. Storing one
+> percentile and calling it a median would misrepresent the source.
+>
+> **2. The stream dimension is missing — the unique constraint collides.** The
+> API returns **76 subclass × stream combinations** across far fewer subclasses.
+> The current unique key has no stream column, so multi-stream subclasses —
+> **485, 500, 482, 186** — produce duplicate keys and the load fails outright.
+> This is not a fidelity nicety; the table cannot be populated as defined.
+>
+> **Recommended changes:**
+>
+> | Change | Rationale |
+> |---|---|
+> | Add `stream TEXT NOT NULL` to the table **and the unique constraint** | Without it 76 real rows cannot coexist |
+> | Replace `median_days` with the percentile fields the API actually returns | Model what the source publishes |
+> | `as_of_date` — **weakly sourced** | Not in the API payload; the page states the calculation window in prose only (G15). Derive from fetch time and label it as such |
 
 **Status:** Target (migration `0015`).
 
@@ -1078,9 +1363,37 @@ These 18 tables are the Silver/Gold normalized output — the actual sourced fac
 **Relationships:**
 - `application_funnel.visa_code` → `visa_subclasses.code`
 
-**Source reference:** 
-- SkillSelect rounds → `application_funnel` (submitted/invited). Tier 2 (piggybacked on existing SkillSelect fetch — don't fetch the same URL twice).
-- Annual PDF report → `application_funnel.granted_count`. Tier 5 (YAML seed once confirmed) or launches NULL.
+**Source reference:**
+- SkillSelect rounds → `application_funnel.invited_count`. Tier 2 (piggybacked on existing SkillSelect fetch — don't fetch the same URL twice).
+- **BP0068 (data.gov.au, CC-BY 2.5)** → `application_funnel.granted_count`. Tier 2 (`xlsx_pivot_cache`), replacing the annual PDF.
+
+> **⚠ Audit (G9 FOUND, G10 NOT PUBLISHED) — one column got much better, one is
+> gone for good.**
+>
+> **`granted_count` — from "weakest-sourced, probably NULL" to fully sourced.**
+> Home Affairs publishes **BP0068** on data.gov.au under **CC-BY 2.5**:
+> **622,425 records**, **10 program years**, **62 visa subclasses**, **764
+> ANZSCO-coded occupations**. No PDF parsing required, and it is annually
+> refreshed. Update `granted_reliability_tier` from `official_curated` to
+> **`official_scraped`** — this is now a machine-readable official dataset.
+>
+> ⚠ **Retrieval:** the data lives in the workbook's **pivot cache**, not its
+> worksheets. `pandas`/`openpyxl` return nothing useful; a stdlib XML reader
+> parses all records in ~4.8s.
+>
+> **`submitted_count` — NO SOURCE, permanently.** Not published in any form:
+> the decoded SkillSelect page was searched for `submitted`, `lodged`,
+> `EOIs on hand`, `EOIs in the system` and `pool` with **zero matches**, and
+> none of Home Affairs' 12 data.gov.au datasets is a SkillSelect/EOI dataset.
+> Record it as unavailable, not pending.
+>
+> **Consequence for the funnel-order check:** with `submitted_count` always
+> NULL, `submitted >= invited >= granted` degrades to `invited >= granted`. Keep
+> the check null-tolerant rather than dropping it.
+>
+> **Grain mismatch to resolve:** `invited_count` is per round/subclass;
+> BP0068's `granted_count` is per program year/subclass/occupation. The unique
+> key `(visa_code, program_year, as_of_date)` fits neither cleanly.
 
 **Status:** Target (migration `0017`).
 
@@ -1115,8 +1428,8 @@ These 18 tables are the Silver/Gold normalized output — the actual sourced fac
 |---|---|---|---|
 | `id` | `INTEGER` | NOT NULL | **PK**, `auto_increment` |
 | `occupation_code` | `TEXT` | NOT NULL | **FK** → `occupations.code` |
-| `shortage_rating` | `TEXT` | NOT NULL | Shortage level (exact vocabulary TBD at build time) |
-| `future_demand_rating` | `TEXT` | NULL | Future demand outlook (exact vocabulary TBD at build time) |
+| `shortage_rating` | `TEXT` | NOT NULL | `CHECK (shortage_rating IN ('S','M','R','NS'))` — confirmed, see audit block |
+| `future_demand_rating` | `TEXT` | NULL | **NO SOURCE** — JSA's `d` field is null throughout |
 | `as_of_date` | `DATE` | NOT NULL | The date this rating reflects |
 | `source_url` | `TEXT` | NOT NULL | Provenance trio |
 | `retrieved_at` | `TIMESTAMPTZ` | NOT NULL | Provenance trio |
@@ -1124,14 +1437,144 @@ These 18 tables are the Silver/Gold normalized output — the actual sourced fac
 
 **Unique constraint:** `(occupation_code, as_of_date)`.
 
-**Note:** Exact rating vocabulary must be confirmed against the live JSA page at implementation time (open design question #2).
+**Note:** ~~Exact rating vocabulary must be confirmed at implementation time~~ — **closed 2026-08-17**, see the audit block below (open design question #2 resolved).
 
 **Relationships:**
 - `skills_priority_ratings.occupation_code` → `occupations.code`
 
-**Source reference:** Skills priority list (JSA) → `skills_priority_ratings`. Tier 2 (BS4/lxml or pandas/openpyxl if downloadable dataset exists — confirm format at build time).
+**Source reference:** JSA Occupation Shortage List → `skills_priority_ratings`, via the embedded `splData` / `splSearch` JSON. Tier 2 (deterministic).
+
+> **⚠ Audit (F7, G11) — vocabulary resolved; one column has no source.**
+>
+> **`shortage_rating` has exactly four values**, confirmed from JSA's own
+> methodology PDF — the earlier "confirm vocabulary at build time" flag is
+> closed:
+>
+> | Code | Meaning |
+> |---|---|
+> | `S` | Shortage |
+> | `M` | Metropolitan shortage |
+> | `R` | Regional shortage |
+> | `NS` | No shortage |
+>
+> `Ns` appearing in the payload is a **casing bug**, not a fifth value —
+> normalise case before applying the CHECK constraint, or valid rows will be
+> rejected as invalid.
+>
+> **`future_demand_rating` — NO SOURCE.** The `d` field in `splData` is null
+> throughout. Ship NULL or drop the column.
+>
+> **Missing dimensions (F7):** JSA publishes ratings against **both ANZSCO and
+> OSCA**, at **both 4- and 6-digit** grain, and per **edition** and
+> **jurisdiction** (the `M`/`R` split is itself geographic). Add
+> `jurisdiction`, `edition` and a code-grain marker, or rows from different
+> vocabularies will silently collide on the same `occupation_code`.
 
 **Status:** Target (migration `0019`).
+
+---
+
+## C19–C22. Entities added by the 2026-08-17 audit
+
+Four tables the model lacked. Each exists because verified data has nowhere to
+land, or because a join cannot be expressed without it.
+
+---
+
+### C19. anzsco_osca_crosswalk
+
+**Purpose:** Carry the ANZSCO→OSCA relationship without a destructive migration
+of `occupations` (F3).
+
+| Column | PostgreSQL Type | Nullable / Default | Constraints |
+|---|---|---|---|
+| `id` | `INTEGER` | NOT NULL | **PK**, `auto_increment` |
+| `anzsco_code` | `TEXT` | NOT NULL | **FK** → `occupations.code` |
+| `anzsco_edition` | `TEXT` | NOT NULL | `2013` \| `2022` |
+| `osca_code` | `TEXT` | NOT NULL | OSCA 2024 code |
+| `is_partial_match` | `BOOLEAN` | NOT NULL, `false` | ABS's `p` flag |
+| `source_url` / `retrieved_at` / `reliability_tier` | — | NOT NULL | Provenance trio |
+
+**Source:** ABS `OSCA correspondence tables v2.xlsx` (catalog source 19), which
+carries both **ANZSCO v1.3 → OSCA** and **ANZSCO 2022 → OSCA**.
+
+⚠ **The mapping is not one-to-one** — OSCA has 1,577 entries vs ANZSCO's 1,236,
+and ABS marks partial matches with `p`. A naive join silently drops or
+duplicates occupations, so `is_partial_match` must be preserved and surfaced.
+
+---
+
+### C20. occupation_list_membership
+
+**Purpose:** Current membership of MLTSSL / STSOL / ROL / CSOL (F4). The model
+had only `list_change_log`, which records *transitions* — so a cold start
+produced zero rows and there was nowhere to store present-day membership.
+
+| Column | PostgreSQL Type | Nullable / Default | Constraints |
+|---|---|---|---|
+| `id` | `INTEGER` | NOT NULL | **PK**, `auto_increment` |
+| `list_name` | `TEXT` | NOT NULL | `CHECK (list_name IN ('MLTSSL','STSOL','ROL','CSOL'))` |
+| `occupation_code` | `TEXT` | NOT NULL | **FK** → `occupations.code` |
+| `anzsco_edition` | `TEXT` | NOT NULL | LIN 19/051 is **2013**; CSOL is **2022** |
+| `compilation_date` | `DATE` | NOT NULL | Which compilation this reflects |
+| `source_url` / `retrieved_at` / `reliability_tier` | — | NOT NULL | Provenance trio |
+
+**Unique constraint:** `(list_name, occupation_code, compilation_date)`.
+
+**Source:** LIN 19/051 epub tables; CSOL from `F2024L01618`.
+**Verified volumes:** MLTSSL **212**, STSOL **215**, ROL **77**.
+
+`list_change_log` becomes a *derivative* of this table — diff two
+`compilation_date`s — rather than a separately-sourced table.
+
+---
+
+### C21. visa_fees
+
+**Purpose:** Promote fees off `visa_subclasses` (F6). 150 fee records cannot
+live as one scalar column on a 6-row table, and fees vary by stream.
+
+| Column | PostgreSQL Type | Nullable / Default | Constraints |
+|---|---|---|---|
+| `id` | `INTEGER` | NOT NULL | **PK**, `auto_increment` |
+| `visa_code` | `TEXT` | NOT NULL | **FK** → `visa_subclasses.code` |
+| `stream` | `TEXT` | NULL | Fees differ per stream |
+| `applicant_type` | `TEXT` | NOT NULL | Primary / secondary / child |
+| `amount_aud` | `NUMERIC(10,2)` | NOT NULL | — |
+| `effective_date` | `DATE` | NOT NULL | Indexed annually on 1 July |
+| `source_url` / `retrieved_at` / `reliability_tier` | — | NOT NULL | Provenance trio |
+
+**Source:** `POST /_layouts/15/api/data.aspx/GetPriceList` — **150 records**,
+`json_api` strategy.
+
+---
+
+### C22. occupation_titles
+
+**Purpose:** The name→code crosswalk that unblocks `eoi_rounds` (G1). Kept as a
+table, not inline logic, because two sources disagree and the resolution order
+is load-bearing.
+
+| Column | PostgreSQL Type | Nullable / Default | Constraints |
+|---|---|---|---|
+| `id` | `INTEGER` | NOT NULL | **PK**, `auto_increment` |
+| `title` | `TEXT` | NOT NULL | As published by the source |
+| `occupation_code` | `TEXT` | NOT NULL | **FK** → `occupations.code` |
+| `title_source` | `TEXT` | NOT NULL | `CHECK (title_source IN ('LIN_19_051','ABS_ANZSCO'))` |
+| `anzsco_edition` | `TEXT` | NOT NULL | — |
+| `source_url` / `retrieved_at` / `reliability_tier` | — | NOT NULL | Provenance trio |
+
+**Unique constraint:** `(title, title_source)` — deliberately *not*
+`(title)`, because the same title legitimately maps to different codes in the
+two sources.
+
+**Resolution rule — LIN-first.** Three titles (**Management Consultant**,
+**Plumber (General)**, **Statistician**) resolve to different codes in the two
+sources. LIN 19/051 is the binding instrument, so it wins. An ABS-first
+implementation returns wrong codes for these three **without erroring**, which
+is why the rule is recorded in the schema rather than left to the parser.
+
+Coverage: ABS alone 132/140, LIN alone 132/140, **union 140/140**.
 
 ---
 
@@ -1169,6 +1612,44 @@ Every fact table carries these last three columns:
 2. **`visa_subclasses.base_application_cost`** — a tier-2-scraped fee value written onto an `official_curated` row erases the fee's true source. Open question #5: consider a separate `visa_fees` time-series table or a second provenance triple scoped to `base_application_cost`.
 
 3. **`source_pages` no provenance** — this is metadata, not a fact. It is the registry of *where* facts come from; it does not itself carry the trio.
+
+### The verified-citation rule (added 2026-08-18)
+
+**A `source_url` must point at a page that actually contains the fact.**
+
+This sounds tautological. It was violated in production, and the existing checks
+could not catch it.
+
+Two `ceiling_usage` rows shipped citing the migration-program planning-levels
+page. That page contains a visa-category table and no per-occupation ceilings —
+the numbers were never on it. `require_provenance` passed, because it tests that
+`source_url` and `retrieved_at` are **non-null**, not that the citation is
+**true**. The API then served those values as `official_curated` `SourcedFact`s,
+where a consumer could not distinguish them from verified government data.
+
+Provenance that points somewhere plausible but wrong is **worse than a NULL**: a
+NULL is honest about not knowing, while a false citation actively transfers the
+government's credibility onto an invented number. For a product whose entire
+regulatory posture rests on "we only report what official sources say", this is
+the failure mode that matters most.
+
+**Rules:**
+
+| Rule | Applies to |
+|---|---|
+| Every manually-curated row must name the **specific table, section or page number** within the cited document — not just the document | Tier 5 seeds |
+| A seed file whose source becomes unavailable must be **emptied**, not left in place | Tier 5 seeds |
+| **NO SOURCE** columns ship NULL and are documented as unavailable, never as pending | All tables |
+| A citation whose page no longer contains the fact is a **data incident**, not a stale link | All tables |
+
+**Detection is a fetcher concern too.** `budget.gov.au/content/migration.htm`
+returns **HTTP 200 with a "Page not found" body** — a soft-404 that a
+status-code-only check passes silently. The fetcher must assert on body content.
+
+**Columns currently marked NO SOURCE:** `ceiling_usage.*` (whole table),
+`application_funnel.submitted_count`, `assessing_bodies.turnaround_estimate`
+and `.cost`, `skills_priority_ratings.future_demand_rating`,
+`visa_subclasses.permanence`, and most of `state_nomination_status`.
 
 ### Snapshot vs. Overwrite (Open Design Question #9)
 
