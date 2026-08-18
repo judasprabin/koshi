@@ -1,5 +1,22 @@
 # koshi — ETL Pipeline Architecture (Canonical)
 
+> ### 2026-08-18 revision — read this first
+>
+> The 2026-08-17 three-agent audit fetched and decoded all 23 sources. Five
+> sections below changed materially:
+>
+> | § | Change |
+> |---|---|
+> | **6** | Source catalog: 16 → **23**; nine entries re-tiered or re-sourced |
+> | **8** | **Tier decision tree rewritten** — it branched on "is it an HTML table?", and for every Home Affairs page the answer is *no*, which routed koshi's largest source family to PDF/manual extraction it never needed |
+> | **9** | Provider bake-off: **premise dissolved.** No source needs JS rendering, a managed provider, PDF or LLM extraction. Playwright can be dropped |
+> | **11** | New **§11.5 structural assertions** — the failure modes that survive row-level fault tolerance, including the 100%-skip-rate and soft-404 cases koshi hits *today* |
+> | **14** | Build order re-sequenced — the old order optimised for curation effort, which is no longer the binding constraint |
+> | **16** | Questions 1, 2, 12 closed; 5, 7 resolved; **14–18 added** |
+>
+> Evidence: `docs/superpowers/research/source-audit/`, summarised in
+> `CONSOLIDATED-FINDINGS.md`.
+
 **Status:** Canonical — single source of truth for koshi's architecture. This
 revision incorporates the re-architecture feedback from `feedback.md` while
 preserving all code-grounded decisions from the prior reconciliation.
@@ -718,27 +735,38 @@ The API always serves `is_current = true` releases. Rollback is instantaneous
 
 > **Exhaustive URL catalog and source details are in the sibling doc:**
 > [`docs/superpowers/research/2026-08-16-koshi-source-urls.md`](../research/2026-08-16-koshi-source-urls.md)
-> — all 16 sources with exact URLs, domains, categories, tier assignments,
-> cadence groups, and per-source notes.
+> — now **23 sources** with exact URLs, verified retrieval methods, tier
+> assignments, cadence groups, and per-source notes.
 
-| # | Source | Tier | Tooling | Feeds | Status |
+**Revised 2026-08-18.** Strategy column replaces "Tooling" — the mechanism, not
+the library, is what varies. Nine of the original 16 rows changed.
+
+| # | Source | Tier | Strategy | Feeds | Status |
 |---|---|---|---|---|---|
-| 1 | ANZSCO occupations | 2 | httpx + BS4/lxml | `occupations` | ✅ built |
-| 2 | EOI invitation rounds | 2 | httpx + BS4/lxml | `eoi_rounds` | ✅ built |
-| 3 | Occupation ceilings | 5 | YAML seed | `ceiling_usage`, `program_allocation` | ✅ built (ceiling_usage) |
-| 4 | Visa fees | 2 | httpx + BS4/lxml | `visa_subclasses.base_application_cost` | |
-| 5 | Points test criteria | 2 | httpx + BS4/lxml | `points_criteria_reference` | |
-| 6 | Visa subclass static facts | 5 | YAML seed | `visa_subclasses` | 6 rows |
-| 7 | Health/character/English requirements | 5 | YAML seed | `eligibility_requirements` | 3 rows |
-| 8 | Processing times | 2 | httpx + BS4/lxml | `processing_times` | |
-| 9 | MLTSSL/STSOL/ROL list changes | 2 | httpx + BS4/lxml | `list_change_log` | |
-| 10 | Skills priority list | 2 | BS4/lxml or pandas/openpyxl | `skills_priority_ratings` | |
-| 11 | State nomination status | 5 | YAML seed | `state_nomination_status` | |
+| 1 | ANZSCO occupations | 2 | *superseded by 18* | `occupations` | ⚠ built, re-source |
+| 2 | EOI invitation rounds | 2 | `hidden_field_json` (`content`) | `eoi_rounds` | ⚠ built, **0 rows** |
+| 3 | Migration program planning levels | **2** | `hidden_field_json` | `program_allocation` | was tier 5 |
+| 3b | **Occupation ceilings** | — | — | — | ❌ **404 / not published** |
+| 4 | Visa fees | 2 | **`json_api`** — 150 recs | `visa_fees` (C21) | |
+| 5 | Points test criteria | 2 | `hidden_field_json` at **`/points-table`** | `points_criteria_reference` | URL corrected |
+| 6 | Visa subclass static facts | 5 | YAML seed | `visa_subclasses` | 6 rows — too few |
+| 7 | Health/character requirements | 5 | YAML seed | `eligibility_requirements` | 3 rows |
+| 8 | Processing times | 2 | **`json_api`** — 76 combos | `processing_times` | ⚠ needs stream key |
+| 9 | MLTSSL/STSOL/ROL | 2 | **`epub_table_positional`** | `occupation_list_membership` (C20) | |
+| 10 | Skills priority list | 2 | embedded JSON (`splData`) | `skills_priority_ratings` | vocabulary confirmed |
+| 11 | State nomination status | 5 | YAML seed | `state_nomination_status` | ⚠ most columns NO SOURCE |
 | 12 | State occupation list changes | 1→5 | hash-diff → YAML seed | `list_change_log` | |
-| 13 | Assessing bodies + join | 5 | Two YAML seeds | `assessing_bodies`, `occupation_assessing_bodies` | |
-| 14 | Policy events | 5 | YAML seed | `policy_events` | |
-| 15 | Application funnel — submitted/invited | 2 | Piggybacked on SkillSelect fetch | `application_funnel` | |
-| 16 | Application funnel — granted | 5 or NULL | YAML seed | `application_funnel.granted_count` | |
+| 13 | Assessing bodies + join | **2** | **`epub_table_positional`** — LIN 19/051 T5/T6 | `assessing_bodies`, join | was MARA (wrong) |
+| 14 | Policy events | 5 | YAML seed | `policy_events` | ⚠ primary URL soft-404 |
+| 15 | Funnel — invited | 2 | piggyback on 2 | `application_funnel.invited_count` | `submitted_count` unpublished |
+| 16 | Funnel — granted | **2** | **`xlsx_pivot_cache`** — BP0068 | `application_funnel.granted_count` | was "5 or NULL" |
+| **17** | SkillSelect previous rounds | 2 | `hidden_field_json` (**`criteria`**) | `eoi_rounds` history | **new** — 19 rounds |
+| **18** | ABS ANZSCO structure | 2 | XLSX Table 6 | `occupations`, `occupation_titles` | **new** — 1,425 pairs |
+| **19** | ABS ANZSCO↔OSCA correspondence | 2 | XLSX | `anzsco_osca_crosswalk` (C19) | **new** |
+| **20** | Name→code crosswalk | derived | LIN-first union | `occupation_titles` (C22) | **new** — 140/140 |
+| **21** | BP0068 outcomes | 2 | `xlsx_pivot_cache` | funnel, visa taxonomy | **new** — 622,425 recs |
+| **22** | English test bands | 2 | `epub_table_positional` (rowspan) | `english_test_bands` | **new** — replaces source 7 |
+| **23** | legislation.gov.au OData | 2 | JSON API | `list_change_log.effective_date` | **new** — 7 versions |
 
 **Tiers 3/4 (PDF/LLM) stay tooling-pre-researched, not built.** If a future
 source genuinely needs them: PDF → `pdfplumber` first, `marker-pdf` second,
@@ -748,19 +776,56 @@ Haiku-class task, ~$0.001/page), structured-output JSON-schema mode,
 
 ### Tier Decision Tree
 
+> **⚠ Revised 2026-08-18.** The original tree branched first on *"HTML with a
+> stable table?"* — and for **every** `immi.homeaffairs.gov.au` page the answer
+> is **no**, because none of them contain a `<table>` tag. That routed koshi's
+> single largest source family to Tier 3 (PDF) or Tier 5 (manual curation),
+> when in fact all of them are deterministically parseable. The tree below
+> branches on *delivery mechanism* rather than *markup shape*.
+
 ```mermaid
 flowchart TD
-    A["Source acquired"] --> B{"HTML with a<br/>stable table?"}
-    B -->|"yes"| C["Tier 2 — deterministic BS4/lxml<br/>Provider: custom (httpx + BS4)<br/>reliability_tier = official_scraped"]
-    B -->|"no, PDF report"| D["Tier 3 — pdfplumber → marker-pdf → Claude vision<br/>(pre-researched, NOT built)"]
-    B -->|"no, prose / resists parsing"| E["Tier 5 — human-curated YAML seed<br/>reliability_tier = official_curated"]
-    D -.->|"if built"| F["Tier 4 — LLM fallback<br/>Provider: Claude Haiku<br/>reliability_tier = official_curated"]
+    A["Source acquired"] --> B{"Undocumented<br/>JSON API available?"}
+    B -->|"yes"| C["Tier 2 · json_api<br/>Fees GetPriceList (150 recs)<br/>Processing times GetProcessGuide* (76 combos)"]
+    B -->|"no"| D{"Hidden-field JSON?<br/>(all immi.homeaffairs.gov.au)"}
+    D -->|"yes"| E["Tier 2 · hidden_field_json<br/>html.unescape → json.loads<br/>⚠ root key per page: content | criteria"]
+    D -->|"no"| F{"Structured file?<br/>XLSX / CSV dataset"}
+    F -->|"yes"| G["Tier 2 · xlsx_pivot_cache<br/>BP0068 — 622,425 recs<br/>⚠ pivot cache, not worksheets"]
+    F -->|"no"| H{"legislation.gov.au<br/>epub tables?"}
+    H -->|"yes"| I["Tier 2 · epub_table_positional<br/>iframe-hop → positional index<br/>⚠ no id/class; assert row counts"]
+    H -->|"no"| J{"Real HTML table?"}
+    J -->|"yes"| K["Tier 2 · html_table<br/>BS4/lxml"]
+    J -->|"no, PDF"| L["Tier 3 — pdfplumber → marker-pdf<br/>(pre-researched, NOT built, NOT needed)"]
+    J -->|"no, prose"| M["Tier 5 — human-curated YAML<br/>⚠ must satisfy the verified-citation rule"]
+    L -.->|"if ever built"| N["Tier 4 — LLM fallback (Haiku)"]
 
     style C fill:#199e70,color:#fff
     style E fill:#199e70,color:#fff
-    style D fill:#888,color:#fff
-    style F fill:#888,color:#fff
+    style G fill:#199e70,color:#fff
+    style I fill:#199e70,color:#fff
+    style K fill:#199e70,color:#fff
+    style M fill:#c98a00,color:#fff
+    style L fill:#888,color:#fff
+    style N fill:#888,color:#fff
 ```
+
+**What the audit changed about tiering:**
+
+| Before | After |
+|---|---|
+| Home Affairs pages = "HTML tables" | **Zero `<table>` tags anywhere** — all hidden-field JSON |
+| Planning levels = Tier 5 (PDF) | **Tier 2** — no PDFs on the page at all |
+| Points table = may need Playwright | **Tier 2 static** — the catalogued URL was simply wrong |
+| Assessing bodies = Tier 5 (MARA) | **Tier 2** — LIN 19/051 epub tables |
+| Granted counts = Tier 5 or NULL | **Tier 2** — BP0068 structured dataset |
+
+**Tiers 3 and 4 are now unused by every catalogued source.** No koshi source is
+a PDF or needs an LLM to parse. Keep them pre-researched for future sources, but
+they are not on any build path.
+
+**No source requires JS rendering.** The "SharePoint SPA" concern that justified
+keeping a headless browser in the stack came from a wrong URL, not from client-
+side rendering — see §9.
 
 ---
 
@@ -1009,6 +1074,37 @@ for provider in ["custom", "firecrawl", "apify"]:
 The bake-off produces a provider configuration that feeds directly into
 `extraction_strategies` control-plane rows.
 
+> **⚠ Revised 2026-08-18 — the bake-off's premise is largely gone.**
+>
+> The ladder existed to answer "when does `custom` (httpx + BS4) stop being
+> enough, and what do we pay to escalate?" The audit fetched all 23 sources and
+> the answer is: **it does not stop being enough.**
+>
+> | Question the bake-off was to answer | Audit finding |
+> |---|---|
+> | Which sources need JS rendering? | **None.** The one "SharePoint SPA" case was a wrong URL — the real page is static. |
+> | Which need a managed extraction provider? | **None.** Every source is deterministic: JSON API, hidden-field JSON, XLSX, or epub tables. |
+> | Which need LLM extraction (Tier 4)? | **None.** No source resists deterministic parsing. |
+> | Which need PDF extraction (Tier 3)? | **None.** The one PDF-only candidate (occupation ceilings) turned out to be unpublished. |
+>
+> **Concrete simplifications this permits:**
+>
+> - **Drop Playwright/headless from the stack.** Nothing needs it. This removes
+>   a heavy dependency, a browser install from deployment, and a whole class of
+>   flakiness.
+> - **Drop the Firecrawl/Apify/Zyte evaluation.** No source is blocked in a way
+>   a managed provider fixes. VIC's Cloudflare block is the sole exception and
+>   is a *residential-IP* problem, not an extraction-capability one — evaluate a
+>   proxy for that single source if it becomes important, not a provider ladder.
+> - **Keep the `provider` column** in `extraction_strategies`. It costs nothing,
+>   and the fallback machinery stays available if a source later hardens.
+>
+> **What replaced the ladder as the real risk:** not extraction capability but
+> **source fragility** — positional epub tables with no `id`/`class`, a JSON
+> root key that varies per page, pivot-cache-only workbooks, and soft-404s. The
+> engineering effort the bake-off would have consumed belongs in the assertions
+> described in §11 instead.
+
 ### 9.3 Cost Model
 
 Instead of a fixed estimate, use a per-component cost model:
@@ -1119,6 +1215,33 @@ without koshi needing any notification integration.
 
 The whole pipeline is safe to re-run from scratch; a Cloud Run Job can be
 retried without side effects.
+
+### 11.5 Structural assertions (added 2026-08-18)
+
+The Phase-0 retrofit made koshi resilient to *transport and row-level* failure:
+retries, backoff, per-row SAVEPOINT isolation, skip-and-continue. The audit
+found the failure modes that survive all of it — cases where the pipeline
+reports success while extracting nothing, or loads data that is silently wrong.
+
+**These are not hypothetical.** Both existing parsers currently exit clean while
+extracting zero rows, and two fabricated rows shipped to the API under a real
+government URL.
+
+| # | Failure mode | Why existing tolerance misses it | Required assertion |
+|---|---|---|---|
+| 1 | **100% skip rate** | Per-row isolation is working as designed: every row fails, each is caught and skipped, the step reports `ok` with `count=0` | **Fail hard when a parser that previously yielded rows yields none**, or when skip rate is 100% with ≥1 input row. A total extraction failure is not a clean run |
+| 2 | **Soft-404** | HTTP 200 with a "Page not found" body — `raise_for_status()` passes. `budget.gov.au/content/migration.htm` does this today | Assert on **body content**, not just status: known 404 phrases, a minimum content length, and an expected structural marker |
+| 3 | **Positional table drift** | LIN 19/051's 12 epub tables have no `id`/`class`; if the document gains a table, index 5 silently becomes different data | **Assert expected row counts** (Table 5 = 504, Table 6 = 38) and a header signature before trusting a positional index |
+| 4 | **JSON root-key mismatch** | Parsers hard-coding `content` raise `KeyError` on `previous-rounds`, which uses `criteria` | Read the root key from `extraction_strategies.config`; **fail loudly** if the configured key is absent rather than falling back |
+| 5 | **Shape drift within a decoded page** | The SkillSelect parser expected 3 columns from a 2-column table; the `ValueError` was caught by the row handler and looked like a data-quality skip | **Assert column count and header text** before the row loop, so a page redesign fails as a schema error, not 140 individual row errors |
+| 6 | **False provenance** | `require_provenance` tests that `source_url`/`retrieved_at` are non-null, not that the citation is true | Tier-5 seeds must cite a specific table/section; a seed whose source is unavailable is **emptied**, not left in place. See the data model's verified-citation rule |
+| 7 | **Pivot-cache silence** | `openpyxl` opens BP0068 and returns empty worksheets — no error, no data | Assert a **minimum record count** (622,425 at last check) after parsing a structured file |
+
+**Design principle:** row-level tolerance and structural assertion pull in
+opposite directions, and both are needed. Tolerate the *individual bad row*;
+fail hard on *the shape being wrong*. The distinguishing question is whether
+continuing would produce a partial result or a silently empty one — and the
+current pipeline answers it wrongly in at least two places.
 
 ---
 
@@ -1395,24 +1518,52 @@ versioned releases.
 
 ### Source Build Order (Phases 2 + 5 combined)
 
-Curation-effort order over presentation-priority order:
+> **⚠ Re-ordered 2026-08-18.** The original order optimised for *curation
+> effort*, on the assumption that many sources needed manual YAML work. The
+> audit reclassified most of them to Tier 2, so the constraint is no longer
+> curation effort — it is **dependency order and source availability**.
 
-1. `visa_subclasses` (tier 5, unblocks FK)
-2. Visa fees (tier 2)
-3. Processing times (tier 2, proves registry end-to-end)
-4. Points test (tier 2)
-5. English bands (tier 2)
-6. Assessing bodies + join (tier 5, first new domain)
-7. Policy events (tier 5, second new domain)
-8. Eligibility requirements (tier 5)
-9. Skills priority (tier 2)
-10. MLTSSL/STSOL/ROL + state list changes (tier 2 / tier 1→5)
-11. **State nomination (deliberately last — highest per-row curation effort)**
-12. Program allocation + application funnel
+**Phase A — repair what exists** (nothing new; koshi currently serves no real
+occupation data):
 
-**Deferred**: `points_distribution` (no confirmed source); tiers 3/4 (only if
-tier-5 curation cadence proves unsustainable); serving-layer expansion (§10
-endpoint inventory).
+1. **Home Affairs hidden-field decoder** — one shared utility; unblocks 9 sources
+2. **SkillSelect parser** — 2-column fix + structural assertions (§11.5)
+3. **`occupation_titles` crosswalk** (C22) — LIN-first; unblocks `eoi_rounds`
+4. **ANZSCO re-source** to ABS Table 6, with `anzsco_edition`
+
+**Phase B — free wins, no new research required** (all verified, all Tier 2):
+
+5. Visa fees (`json_api`, 150 recs) → C21
+6. Processing times (`json_api`, 76 combos) — **after** the stream migration
+7. Points criteria (`/points-table`)
+8. Program allocation (planning levels — Tier 2, not 5)
+9. Eligibility requirements (decoded prose)
+
+**Phase C — new domains, verified sources:**
+
+10. English bands (`F2025L00905`, rowspan-aware) → replaces the Home Affairs page
+11. Assessing bodies + join (LIN 19/051 T5/T6) — needs the abbreviation mapping
+12. Occupation list membership (C20) + `list_change_log` via OData
+13. Skills priority (JSA, vocabulary now confirmed)
+14. BP0068 → `granted_count` + visa taxonomy
+
+**Phase D — hardest, least sourced (deliberately last):**
+
+15. State nomination — most columns have **NO SOURCE**; VIC still blocked
+16. Policy events — editorial; primary URL is a soft-404
+
+**Prerequisite migrations** (block Phases B and C):
+
+- `occupations`: `anzsco_edition` + code grain (F3, F9)
+- `processing_times`: stream key + percentile fields (F1) — the unique
+  constraint currently collides on 485/500/482/186
+- `visa_subclasses`: widen beyond 6 rows (F10)
+
+**Dropped or deferred**: `ceiling_usage` (not published — see 3b);
+`application_funnel.submitted_count` (not published); `points_distribution`
+(no confirmed source); tiers 3/4 (**no catalogued source needs them**);
+Playwright and the managed-provider bake-off (**no source needs them** — §9);
+serving-layer expansion (§10 endpoint inventory).
 
 ---
 
@@ -1466,19 +1617,57 @@ version this file overwrites).
 
 Carried forward from the prior doc, plus new ones surfaced by the re-architecture.
 
-1. **`list_change_log`** — legislation.gov.au's real HTML structure must be confirmed before committing to pure tier-2.
-2. **`skills_priority_ratings`** — JSA's exact rating vocabulary must be confirmed against the live page.
+> **⚠ Updated 2026-08-18.** Questions 1, 2 and 12 are **closed** by the audit;
+> 5 and 7 are **resolved in principle**. New questions 14–18 replace them —
+> and they are harder, because they are about data that genuinely does not
+> exist rather than pages nobody had looked at yet.
+
+1. ~~**`list_change_log`** — legislation.gov.au's real HTML structure~~ —
+   **CLOSED.** Content is in an epub doc one iframe-hop away: 12 tables, no
+   `id`/`class`, positional access. Version history comes from the OData API.
+2. ~~**`skills_priority_ratings`** — JSA's rating vocabulary~~ — **CLOSED.**
+   Exactly four values: `S` / `M` (metropolitan) / `R` (regional) / `NS`.
+   `Ns` is a casing bug. `future_demand_rating` has no source at all.
 3. **`application_funnel` dual provenance** — second nullable provenance triple scoped to `granted_count`; a genuine schema extension beyond the single-triple convention.
 4. **Parser return-type change** — `ParseResult(rows, skipped)` touches two already-reviewed test files.
-5. **Provenance on `visa_subclasses.base_application_cost`** — a tier-2-scraped fee written onto an `official_curated` row erases the fee's true source. Consider a `visa_fees` time-series table or a second provenance triple scoped to the cost field.
+5. **Provenance on `visa_subclasses.base_application_cost`** — **resolved in principle:** promote to a dedicated `visa_fees` table (data model C21). The fee API returns **150 records** with per-stream variation, which cannot live as one scalar on a 6-row table regardless of provenance.
 6. **404/410 handling** — reconcile the failure-mode table's "mark `status='dead'`, skip" vs. Phase-0 `FetchError` approach.
 7. **Multi-table `SourceSpec`** — `tables` is a tuple but `run_source_sync` takes one parser/persist; the SkillSelect→funnel piggyback can't be expressed by the generalized contract.
 8. **Migration numbering vs. landing order** — §7's numbers are a catalog index; §14 lands them in a different order.
 9. **Snapshot vs. overwrite** — most reference tables don't say whether a change overwrites (losing prior value + `retrieved_at`) or appends. Decide point-in-time vs. current-state per table.
 10. **Two-pass `visa_subclasses` seed** — the generalized `load_seed_rows` needs a deferred-FK hook the single-pass signature doesn't have.
 11. **GCS snapshot cost** — immutable append-only Bronze storage accumulates over time. Define a retention policy (e.g., keep last N snapshots per resource, or time-based TTL).
-12. **Provider bake-off ground truth** — who validates accuracy? Need a human-verified golden dataset for the 10 test URLs before the bake-off starts.
+12. ~~**Provider bake-off ground truth**~~ — **CLOSED, question dissolved.** No
+    source needs a managed provider, JS rendering, PDF extraction or LLM
+    extraction, so there is no bake-off to validate. See §9.
 13. **Quarantine replay** — when a fix ships for a quarantined record, how does it re-enter the pipeline? Dedicated `replay --quarantine` command or re-extraction from the original snapshot?
+
+### New questions from the audit
+
+14. **What is `occupations`' primary key, exactly?** Sources join at 4-digit
+    *and* 6-digit grain, across three simultaneously-live editions (ANZSCO
+    2013, ANZSCO 2022, OSCA). The recommendation is to keep ANZSCO with an
+    explicit `anzsco_edition` and a crosswalk table — but the composite-key
+    shape, and whether 4-digit rows coexist with 6-digit rows in one table or
+    live in a separate `unit_groups` dimension, is undecided. **This blocks 7
+    FKs**, so it should be settled before any new domain table lands.
+15. **How are "either body" assessment requirements modelled?** LIN 19/051
+    Table 5 lists some occupations as assessable by *either* of two
+    authorities. A `(occupation, body)` join row cannot express a disjunction:
+    two rows asserts both are required, one row loses information. Needs a
+    `requirement_group` or an explicit `alternative_of` relationship.
+16. **Does `ceiling_usage` survive?** The data is not published at 6-digit
+    grain. Retire the table, re-grain it to 4-digit from an FOI release with no
+    update cadence, or derive `issued` from BP0068 and drop `ceiling`
+    altogether. All three are defensible; the choice is product, not technical.
+17. **How are NO SOURCE columns surfaced in the API?** Roughly a dozen columns
+    will permanently be NULL. A consumer cannot currently distinguish "not yet
+    loaded" from "never published". Consider an explicit availability marker in
+    the `SourcedFact` contract rather than a bare null.
+18. **What is koshi's ANZSCO→OSCA migration trigger?** ANZSCO is being retired.
+    The crosswalk defers the decision, but not indefinitely — what event
+    (JSA dropping ANZSCO, the binding instrument being re-coded) forces the
+    switch, and is the crosswalk sufficient to execute it when it comes?
 
 ---
 
