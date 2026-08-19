@@ -40,6 +40,38 @@ every koshi source (`docs/superpowers/specs/2026-08-16-koshi-etl-architecture.md
 >
 > The other 17 entries are researched and **not built**.
 
+## Quick reference — all 23 sources at a glance
+
+Full detail for each is below; this table exists so you don't have to scroll
+through it to find the 6 that are built.
+
+| # | Source | Status |
+|---|---|---|
+| 1 | ANZSCO occupations | ✅ BUILT — superseded by 18 as the code/title source |
+| 2 | EOI invitation rounds (current) | ✅ BUILT |
+| 3 | Migration program planning levels | VERIFIED |
+| 3b | Occupation ceilings | ❌ 404 / not published |
+| 4 | Visa fees | VERIFIED |
+| 5 | Points test criteria | VERIFIED |
+| 6 | Visa subclass static facts | ✅ BUILT (via BP0068) |
+| 7 | Health/character requirements | VERIFIED |
+| 8 | Processing times | VERIFIED |
+| 9 | MLTSSL/STSOL/ROL | extractor exists, sync not built |
+| 10 | Skills priority list | VERIFIED |
+| 11 | State nomination status | VERIFIED — most columns NO SOURCE |
+| 12 | State occupation list changes | VERIFIED |
+| 13 | Assessing bodies + join | extractor exists, sync not built |
+| 14 | Policy events | VERIFIED — primary URL soft-404 |
+| 15 | Funnel — invited | VERIFIED — `submitted_count` permanently unpublished |
+| 16 | Funnel — granted | ✅ BUILT (via BP0068) |
+| 17 | SkillSelect previous rounds | ✅ BUILT |
+| 18 | ABS ANZSCO structure | ✅ BUILT |
+| 19 | ABS ANZSCO↔OSCA correspondence | VERIFIED |
+| 20 | Name→code crosswalk | ✅ BUILT |
+| 21 | BP0068 outcomes | ✅ BUILT |
+| 22 | English test bands | VERIFIED |
+| 23 | legislation.gov.au OData | VERIFIED |
+
 ## How to read this
 
 One table per source. Each row records, for that source's live page(s):

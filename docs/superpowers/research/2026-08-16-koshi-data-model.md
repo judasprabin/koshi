@@ -45,6 +45,14 @@
 > exist, and building it would abort every crosswalk load. Undocumented
 > deviations read as bugs to the next person, so they are written down where
 > someone will actually hit them.
+>
+> **9 tables are live.** If you want the real schema, skip to
+> [C1](#c1-occupations) — every table in §C carries its own Built/Target
+> status. Sections **A** (Control Plane, 6 tables) and **B**
+> (Data/Execution Plane, 5 tables) below are **0% built** — see each
+> section's own banner for why, and the ETL architecture doc's
+> [Part II](2026-08-16-koshi-etl-architecture.md#10-target-architecture-overview--the-medallion-pipeline)
+> for the full reference design.
 
 ---
 
@@ -417,6 +425,12 @@ erDiagram
 
 ## A. Control Plane Entities
 
+> ⚠ **DEFERRED — not on the near-term roadmap.** Build when: hardcoded
+> source constants in `pipeline.py` become painful to maintain by hand —
+> realistically, once source count is well past today's 6, or once adding a
+> source means touching more than one file. See the ETL architecture doc's
+> [§12](2026-08-16-koshi-etl-architecture.md#12-control-plane).
+
 The control plane defines **what should happen** — configuration, policies, schedules, and the registry of sources/resources/contracts. It does not hold acquired data.
 
 ### A1. sources
@@ -587,6 +601,11 @@ The control plane defines **what should happen** — configuration, policies, sc
 ---
 
 ## B. Data / Execution Plane Entities
+
+> ⚠ **DEFERRED — not on the near-term roadmap.** Build when: scheduling
+> stops being manual, or a bad row reaches the API unnoticed and there's no
+> quarantine to have caught the next one. See the ETL architecture doc's
+> [§13](2026-08-16-koshi-etl-architecture.md#13-data-plane).
 
 The data plane executes **what needs to happen** — acquisition, extraction, validation, quality gating, and publication.
 
