@@ -17,9 +17,11 @@ every koshi source (`docs/superpowers/specs/2026-08-16-koshi-etl-architecture.md
 > inside a hidden input. Entries below that said "HTML table" described markup
 > that does not exist, which is why both built parsers extract zero rows.
 >
-> Evidence: `docs/superpowers/research/source-audit/` — `agent1-page-audit.md`
-> (pages), `agent2-schema-mapping.md` (schema), `agent3-gap-search.md` (gaps),
-> summarised in `CONSOLIDATED-FINDINGS.md`.
+> Evidence: the three-agent audit's per-agent working notes (page-by-page
+> fetch results, schema mapping, gap search) have been removed now that
+> their findings are folded into this catalog and `2026-08-16-koshi-data-model.md`;
+> the decision-ready summary survives at
+> `docs/superpowers/research/source-audit/CONSOLIDATED-FINDINGS.md`.
 >
 > ### 2026-08-18 (later) — 6 of these sources are now built
 >
@@ -268,9 +270,9 @@ comment-only and documents the three conditions for repopulating it.
 | Feeds | `visa_subclasses.base_application_cost`; see F6 — promote to its own table |
 | Status | **VERIFIED** — 150 records returned |
 
-Notes: **`/visa-fees` (the URL in `docs/data-sources.md`) returns 404.** Better
-than the catalog assumed: the page is backed by a hidden JSON API that returns
-all 150 fee records without any HTML parsing. Prefer the API over the page.
+Notes: **`/visa-fees` (the URL the original catalog assumed) returns 404.**
+Better than the catalog assumed: the page is backed by a hidden JSON API that
+returns all 150 fee records without any HTML parsing. Prefer the API over the page.
 
 Two schema consequences:
 
@@ -354,7 +356,7 @@ Three individual page URLs.
 | Feeds | `eligibility_requirements` — requirement_type, summary |
 | Status | **VERIFIED** — live, prose only |
 
-Notes: The `docs/data-sources.md` template URL
+Notes: The template URL
 `immi.homeaffairs.gov.au/help-support/meeting-our-requirements/{health,character,english-language}`
 resolves exactly as written — all three live. `eligibility_requirements` is
 buildable today from the decoded prose.

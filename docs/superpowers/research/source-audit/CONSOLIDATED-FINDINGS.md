@@ -1,11 +1,15 @@
 # Source audit — consolidated findings
 
 **Date:** 2026-08-17
-**Inputs:** `agent1-page-audit.md` (708 lines) · `agent2-schema-mapping.md`
-(1,292 lines) · `agent3-gap-search.md` (1,452 lines)
+**Inputs:** a three-agent audit — `agent1-page-audit.md` (page-by-page
+fetch results), `agent2-schema-mapping.md` (column-level schema mapping),
+`agent3-gap-search.md` (targeted gap search). All three findings are folded
+into `2026-08-16-koshi-source-urls.md` and `2026-08-16-koshi-data-model.md`;
+the raw working files were removed on 2026-08-21 as duplicative once that
+merge was verified complete.
 
-This is the decision-ready summary of the three-agent audit. The agent files
-remain the evidence of record; this file states what changed and what to do.
+This is the decision-ready summary of the three-agent audit — what changed
+and what to do about it.
 
 ---
 

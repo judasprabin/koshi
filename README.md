@@ -34,8 +34,9 @@ no "whose data is this" question to answer. See
 |-----|--------------|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Component diagrams, data model (ER diagram), the extraction-watermark design, what's real vs. spec-only |
 | [docs/API.md](docs/API.md) | Every endpoint, request/response examples, the `SourcedFact`/`DerivedFact` contract |
-| [docs/data-sources.md](docs/data-sources.md) | Every data source koshi's design targets, which ones have real extraction code today, and which remain spec-only |
-| [docs/superpowers/specs/](docs/superpowers/specs/) | The original design spec (full intended scope — broader than what's built) |
+| [docs/superpowers/research/2026-08-16-koshi-source-urls.md](docs/superpowers/research/2026-08-16-koshi-source-urls.md) | Every cataloged data source (23), its verified URL/extraction method, and a quick-reference table of which 6 are actually built |
+| [docs/superpowers/research/2026-08-16-koshi-data-model.md](docs/superpowers/research/2026-08-16-koshi-data-model.md) | Full schema reference — the 9 live tables plus the researched-but-unbuilt ones |
+| [docs/superpowers/specs/2026-08-16-koshi-etl-architecture.md](docs/superpowers/specs/2026-08-16-koshi-etl-architecture.md) | The deep-dive doc: Part I is what's built (more detail than ARCHITECTURE.md), Part II is deferred reference architecture, Part III is history |
 
 ## Architecture
 
@@ -47,8 +48,8 @@ actually implemented right now.
 
 | Layer | Design | Today |
 |-------|--------|-------|
-| Discovery & crawling | Owned by koshi — crawls its own source list, hashes pages for change-detection, stores the registry in Postgres (`source_pages`) | ✅ Built (`crawler/fetch.py`), pointed at 2 real pages so far |
-| Extraction | Tiered: deterministic HTML/table parsers, PDF parsers, Claude fallback for non-templated pages, manual curation where a real source isn't cleanly scrapable | ✅ Deterministic parsers + manual curation. ⏳ PDF and Claude-fallback tiers not built (not yet needed) |
+| Discovery & crawling | Owned by koshi — crawls its own source list, hashes pages for change-detection, stores the registry in Postgres (`source_pages`) | ✅ Built (`crawler/fetch.py`), driving 6 live sources (ANZSCO, ABS, LIN 19/051, 2 SkillSelect pages, BP0068) |
+| Extraction | Tiered: deterministic HTML/table parsers, PDF parsers, LLM fallback for non-templated pages, manual curation where a real source isn't cleanly scrapable | ✅ 7 deterministic parser modules, no PDF/LLM tier built — a 2026-08-17 audit of all 23 catalogued sources found none needs one |
 | Backend | FastAPI, Python 3.11+ | ✅ |
 | Data | Cloud SQL Postgres (shares an instance with saathi/manaslu, separate database) | ⏳ Local Postgres only — Cloud SQL deliberately deferred, see the note just below the table |
 | Auth | Cloud Run IAM invoker only — no end-user identity | ⏳ No auth at all locally (nothing to invoke yet); the "no end-user identity" part is already true and permanent |
@@ -60,7 +61,7 @@ actually implemented right now.
 2. Create the `koshi` role and the `koshi`/`koshi_test` databases, owned by that role, with password `koshi`.
 3. `pip install -e ".[dev]"`
 4. `DATABASE_URL=postgresql+psycopg://koshi:koshi@localhost:5432/koshi alembic upgrade head`
-5. `DATABASE_URL=postgresql+psycopg://koshi:koshi@localhost:5432/koshi python -m koshi` — runs the full local sync end-to-end: crawls/parses ANZSCO occupations, crawls/parses SkillSelect EOI rounds (refreshing occupation momentum for every occupation a new round touches), then seeds the manually-curated `ceiling_usage` data. Without this step the API has no data to serve.
+5. `DATABASE_URL=postgresql+psycopg://koshi:koshi@localhost:5432/koshi python -m koshi` — runs the full local sync end-to-end, in order: ANZSCO occupations, ABS occupations (the authoritative 1,076-code set), the name→code crosswalk (LIN 19/051 + ABS), current SkillSelect EOI rounds, historical EOI rounds (momentum needs the trailing window), BP0068 grant statistics + visa subclasses, a backfill retry for any round the crosswalk couldn't resolve yet, and finally the manually-curated `ceiling_usage` seed (currently empty by design — see `docs/API.md`). Each step is isolated: one failing step doesn't stop the rest. Without this step the API has no data to serve. Full per-step detail: `docs/superpowers/specs/2026-08-16-koshi-etl-architecture.md` §2.
 6. `pytest` — runs against `koshi_test` (see `tests/conftest.py`)
 7. `uvicorn koshi.main:app --reload` — serves the API at `http://localhost:8000/v1`, docs at `/v1/docs`
 

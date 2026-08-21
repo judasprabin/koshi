@@ -131,6 +131,15 @@ intentional, not a bug to work around on the frontend:
 | `latest_threshold` | No `eoi_rounds` row exists yet for this occupation. |
 | `momentum` | Fewer than 3 `eoi_rounds` rows exist for this occupation — momentum needs a real trailing-3-round trend, and koshi will never fabricate one. |
 
+**Right now, `ceiling_issued`/`ceiling_cap`/`places_left`/`insight` are
+`null` for every occupation.** The example above shows the shape the fields
+take when populated, but the seed file that would populate them
+(`seeds/ceiling_usage_manual.yaml`) is currently empty by design — per-occupation
+ceilings aren't published anywhere at koshi's grain (an earlier seed cited a
+page that didn't actually contain the numbers; it was removed rather than
+left mis-sourced). Don't build a frontend that assumes these fields are
+routinely populated.
+
 **Error response — unknown occupation code:**
 
 ```bash

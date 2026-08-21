@@ -1,26 +1,29 @@
 # koshi — Architecture
 
-**Status:** Reflects the implementation as merged to `main` (occupation
-vertical slice — see `docs/superpowers/plans/2026-08-14-koshi-occupation-slice-v2.md`).
-**Date:** 2026-08-15
+**Status:** Reflects the implementation as merged to `main` — 6 sources, 9
+tables, `python -m koshi` running end to end.
+**Date:** 2026-08-21 (originally written 2026-08-15 for the occupation
+vertical slice — see `docs/superpowers/plans/2026-08-14-koshi-occupation-slice-v2.md`
+for that history — and updated in place as the pipeline grew to its current
+6-source shape; it was never a second copy of that plan).
 
 This doc explains how koshi is actually built: the components, how data
 flows through them, the data model, and the design principles that shape
-every piece. For *why* koshi exists and its full intended data model (most
-of which isn't built yet), see
-[`docs/superpowers/specs/2026-08-14-koshi-design.md`](superpowers/specs/2026-08-14-koshi-design.md) —
-this doc describes the subset that's real today.
+every piece. For the full target architecture (built and deferred parts
+both, clearly separated) and the reasoning behind it, see
+[`docs/superpowers/specs/2026-08-16-koshi-etl-architecture.md`](superpowers/specs/2026-08-16-koshi-etl-architecture.md) —
+Part I there covers the same ground as this file in more depth; this file
+is the fast, code-anchored tour.
 
 ## 1. Where koshi sits
 
-> **📐 Full ETL pipeline design** (all 16 sources, the complete data model,
-> fault tolerance, sequencing, target scheduling/deployment, and the full
-> technology-alternatives record) lives in the canonical
-> [`docs/superpowers/specs/2026-08-16-koshi-etl-architecture.md`](superpowers/specs/2026-08-16-koshi-etl-architecture.md).
-> This file documents the subset that's *actually built* today; that doc is
-> the target architecture. The earlier
-> `docs/ETL-PIPELINE-ARCHITECTURE.md` is an independent draft that doc's own
-> banner explains and supersedes.
+> **📐 Full architecture, including deferred/reference design** (the
+> complete data model, fault tolerance, near-term roadmap, and the
+> reference architecture for scale koshi hasn't hit yet) lives in the
+> canonical [`docs/superpowers/specs/2026-08-16-koshi-etl-architecture.md`](superpowers/specs/2026-08-16-koshi-etl-architecture.md).
+> This file documents the subset that's *actually built* today; that doc's
+> Part I is the same story in more depth, and its Part II is the
+> not-yet-needed reference design — read this file first.
 
 koshi is one of five repos in the Saathi product family. It's the only one
 with no end-user identity anywhere in it — the data it serves is public and
@@ -50,8 +53,10 @@ both importing the same `src/koshi/` package:
   a government page), **T**ransform (parse it into typed rows, plus derive
   momentum from rows already stored), **L**oad (persist into Postgres) —
   with a validation gate (`provenance.py`) in between transform and load.
-  Run manually today; the design spec's intended production shape is a
-  Cloud Run Job on a schedule (design spec §5) — not built yet.
+  Run manually today; the original design spec's
+  ([`2026-08-14-koshi-design.md`](superpowers/specs/2026-08-14-koshi-design.md),
+  referred to as "the design spec" throughout this doc) intended production
+  shape is a Cloud Run Job on a schedule (§5) — not built yet.
 - **Serving API** — `uvicorn koshi.main:app`. The FastAPI app that answers
   HTTP requests against whatever the ETL pipeline has already persisted.
   Read-only; it never fetches, parses, or crawls anything itself. This is
@@ -61,7 +66,7 @@ both importing the same `src/koshi/` package:
 | ETL stage | Module | |
 |---|---|---|
 | **E**xtract | `crawler/fetch.py` | Raw HTTP fetch + content hash, nothing parsed yet |
-| **T**ransform | `extraction/anzsco_occupations.py`, `extraction/skillselect_rounds.py`, `momentum.py` | Raw HTML → typed rows; momentum derives a new fact from rows already loaded |
+| **T**ransform | `extraction/*.py` (7 modules — full list in §3), `crosswalk.py`, `momentum.py` | Raw HTML/XML/JSON → typed rows; crosswalk resolves names to codes, momentum derives a new fact from rows already loaded |
 | *(validate)* | `provenance.py` | Rejects a row before it can be loaded — a data-quality gate, not one of the three letters, but standard ETL practice |
 | **L**oad | `pipeline.py` (`session.add`/`merge` + `commit`) | Persists into Postgres |
 
@@ -380,30 +385,26 @@ repo, not this one.
 
 ## 9. What's real vs. what's specified but not built
 
-This slice deliberately covers one vertical: the Occupation view. The
-design spec describes a much larger system. Concretely, **not yet built**:
+koshi covers the Occupation view end to end today — occupations, the
+name→code crosswalk, EOI rounds and momentum, and visa-subclass grant
+statistics, across 6 built sources. 17 more catalogued sources (visa fees,
+processing times, points criteria, state nomination, program allocation,
+and more) are researched but not yet built. Concretely, **not yet built**:
 
-- State nomination status, visa comparison, national/reference endpoints —
-  separate future plans (design spec §10).
-- PDF extraction tier and Claude-fallback extraction tier (design spec
-  §5). Neither is needed: the 2026-08-17 source audit fetched all 23
-  catalogued sources and **none** requires PDF extraction, LLM extraction,
-  or JS rendering.
-
-  Note the two pages this slice scrapes are *not* "clean HTML tables", as
-  this section previously claimed — neither contains a `<table>` tag.
-  SkillSelect ships hidden-field JSON (`koshi.extraction.homeaffairs`) and
-  the ANZSCO listing is a Drupal card grid. Both parsers were rewritten
-  against captured live pages on 2026-08-18; the earlier versions were
-  built against synthetic fixtures and extracted zero rows in production.
+- State nomination status, visa comparison, national/reference endpoints,
+  and the other 17 catalogued-but-unbuilt sources — see the near-term
+  roadmap in [`2026-08-16-koshi-etl-architecture.md`](superpowers/specs/2026-08-16-koshi-etl-architecture.md) §7.
+- PDF extraction tier and LLM-fallback extraction tier. Neither is needed:
+  the 2026-08-17 source audit fetched all 23 catalogued sources and
+  **none** requires PDF extraction, LLM extraction, or JS rendering.
 - A scheduled Cloud Run Job triggering ingestion — `python -m koshi` is run
   by hand today.
 - Cloud SQL / Terraform / any GCP deployment — deliberately deferred until
-  local development is solid (design spec §11); see `README.md`.
+  local development is solid; see `README.md`.
 
-See `docs/data-sources.md` for exactly which of the design spec's 16
-cataloged data sources have real extraction code today versus which remain
-spec-only.
+See [`2026-08-16-koshi-source-urls.md`](superpowers/research/2026-08-16-koshi-source-urls.md)'s
+quick-reference table for exactly which of the 23 cataloged data sources
+have real extraction code today versus which remain researched-but-unbuilt.
 
 ## 10. Testing philosophy
 
