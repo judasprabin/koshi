@@ -9,7 +9,8 @@
 > It is now three parts, **in this order**:
 >
 > - **Part I — What's Built and Running** (§1–§9): the real system. 6 sources,
->   9 tables (8 populated), `python -m koshi` exits 0. Start here.
+>   8 tables (7 populated — `ceiling_usage` exists but is empty by design),
+>   `python -m koshi` exits 0. Start here.
 > - **Part II — Reference Architecture** (§10–§19): the medallion pipeline,
 >   control plane, quality engine, provider ladder — legitimate design for
 >   when koshi outgrows hand-run single-machine operation. Every section

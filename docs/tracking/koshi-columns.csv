@@ -1,0 +1,287 @@
+table_name,column_name,data_type,nullable,default,key,references,column_status,notes
+occupations,code,varchar,NO,,PK,,BUILT,ANZSCO occupation code
+occupations,name,varchar,NO,,,,BUILT,
+occupations,unit_group,varchar,NO,,,,BUILT,
+occupations,source_url,varchar,NO,,,,BUILT,provenance trio
+occupations,retrieved_at,timestamptz,NO,,,,BUILT,provenance trio
+occupations,reliability_tier,varchar,NO,official_scraped,,,BUILT,provenance trio
+occupations,code_grain,varchar,NO,,,,BUILT,'unit_group' | 'occupation' - migration 0008
+occupations,anzsco_edition,varchar,NO,,,,BUILT,'2013' | '2022' - migration 0010
+eoi_rounds,id,integer,NO,sequence,PK,,BUILT,
+eoi_rounds,visa_code,varchar,NO,,UNIQUE (composite),,BUILT,"e.g. 189, 491"
+eoi_rounds,occupation_code,varchar,YES,,,occupations.code,BUILT,NULL until crosswalk resolves it
+eoi_rounds,round_date,date,NO,,UNIQUE (composite),,BUILT,
+eoi_rounds,threshold_points,integer,NO,,,,BUILT,
+eoi_rounds,invitations_issued,integer,YES,,,,BUILT,always NULL today - no source at occupation grain (lives in Table A/C)
+eoi_rounds,source_url,varchar,NO,,,,BUILT,provenance trio
+eoi_rounds,retrieved_at,timestamptz,NO,,,,BUILT,provenance trio
+eoi_rounds,reliability_tier,varchar,NO,official_scraped,,,BUILT,provenance trio
+eoi_rounds,occupation_name_raw,varchar,NO,,UNIQUE (composite),,BUILT,"the real dedup key (occupation_code is NULL for unresolved rows, and Postgres treats NULLs as distinct) - migration 0007"
+ceiling_usage,id,integer,NO,sequence,PK,,BUILT,
+ceiling_usage,occupation_code,varchar,NO,,FK,occupations.code,BUILT,
+ceiling_usage,program_year,varchar,NO,,,,BUILT,
+ceiling_usage,issued,integer,NO,,,,BUILT,
+ceiling_usage,ceiling,integer,NO,,,,BUILT,
+ceiling_usage,as_of_date,date,NO,,,,BUILT,
+ceiling_usage,source_url,varchar,NO,,,,BUILT,provenance trio
+ceiling_usage,retrieved_at,timestamptz,NO,,,,BUILT,provenance trio
+ceiling_usage,reliability_tier,varchar,NO,official_curated,,,BUILT,provenance trio
+occupation_momentum,id,integer,NO,sequence,PK,,BUILT,
+occupation_momentum,occupation_code,varchar,NO,,FK,occupations.code,BUILT,
+occupation_momentum,computed_at,timestamptz,NO,,,,BUILT,
+occupation_momentum,direction,varchar,NO,,,,BUILT,'rising' | 'falling' | 'steady'
+occupation_momentum,reliability_tier,varchar,NO,derived,,,BUILT,always 'derived'; no source_url on this table
+occupation_titles,id,integer,NO,sequence,PK,,BUILT,
+occupation_titles,title,varchar,NO,,,,BUILT,"as published, verbatim"
+occupation_titles,title_normalized,varchar,NO,,UNIQUE (composite),,BUILT,"case/whitespace-folded, footnote markers stripped"
+occupation_titles,occupation_code,varchar,NO,,no FK (deliberate),occupations.code (not enforced),BUILT,names codes occupations.code doesn't carry - an FK would abort loading
+occupation_titles,title_source,varchar,NO,,UNIQUE (composite),,BUILT,'LIN_19_051' | 'ABS_ANZSCO'
+occupation_titles,anzsco_edition,varchar,NO,,,,BUILT,'2013' (LIN) or '2022' (ABS)
+occupation_titles,source_url,varchar,NO,,,,BUILT,provenance trio
+occupation_titles,retrieved_at,timestamptz,NO,,,,BUILT,provenance trio
+occupation_titles,reliability_tier,varchar,NO,,,,BUILT,provenance trio
+source_pages,id,integer,NO,sequence,PK,,BUILT,
+source_pages,url,varchar,NO,,UNIQUE,,BUILT,
+source_pages,domain,varchar,NO,,,,BUILT,
+source_pages,category,varchar,NO,,,,BUILT,
+source_pages,content_hash,varchar,NO,,,,BUILT,SHA-256 of raw bytes
+source_pages,first_seen_at,timestamptz,NO,now(),,,BUILT,
+source_pages,last_checked_at,timestamptz,NO,now(),,,BUILT,
+source_pages,last_changed_at,timestamptz,NO,now(),,,BUILT,advances on every fetch where content_hash changes
+source_pages,status,varchar,NO,active,,,BUILT,'active' | 'dead' | 'redirected'
+source_pages,last_extracted_at,timestamptz,YES,,,,BUILT,the anti-freeze watermark - only advances after successful parse+persist
+visa_subclasses,code,varchar,NO,,PK,,BUILT,
+visa_subclasses,name,varchar,NO,,,,BUILT,
+visa_subclasses,visa_category,varchar,YES,,,,BUILT,from BP0068's taxonomy
+visa_subclasses,source_url,varchar,NO,,,,BUILT,provenance trio
+visa_subclasses,retrieved_at,timestamptz,NO,,,,BUILT,provenance trio
+visa_subclasses,reliability_tier,varchar,NO,,,,BUILT,provenance trio
+application_funnel,id,integer,NO,sequence,PK,,BUILT,
+application_funnel,visa_code,varchar,NO,,"FK, UNIQUE (composite)",visa_subclasses.code,BUILT,
+application_funnel,program_year,varchar,NO,,UNIQUE (composite),,BUILT,e.g. 2025-26
+application_funnel,submitted_count,integer,YES,,,,BUILT,"always NULL - NO SOURCE anywhere, permanent"
+application_funnel,invited_count,integer,YES,,,,BUILT,always NULL today - pending grain reconciliation with eoi_rounds
+application_funnel,granted_count,integer,YES,,no check constraint (deliberate),,BUILT,BP0068 is confidentialised - one real row is -2; no non-negative CHECK
+application_funnel,source_url,varchar,NO,,,,BUILT,provenance trio (describes granted_count today)
+application_funnel,retrieved_at,timestamptz,NO,,,,BUILT,provenance trio
+application_funnel,reliability_tier,varchar,NO,,,,BUILT,provenance trio
+visa_subclasses,family,TEXT,NO,,,,TARGET,e.g. skilled/student/family
+visa_subclasses,permanence,TEXT,NO,,,,TARGET,NO SOURCE anywhere found - ship NULL or curate manually
+visa_subclasses,age_limit,TEXT,YES,,,,TARGET,
+visa_subclasses,work_rights_description,TEXT,YES,,,,TARGET,
+visa_subclasses,family_inclusion_rule,TEXT,YES,,,,TARGET,
+visa_subclasses,residency_requirement_description,TEXT,YES,,,,TARGET,
+visa_subclasses,occupation_list_required,BOOLEAN,NO,,,,TARGET,
+visa_subclasses,onward_pathway_code,TEXT,YES,,FK (self),visa_subclasses.code,TARGET,needs 2-pass seed; the doc's own 491->191 example targets a row that doesn't exist in a 6-row table
+visa_subclasses,base_application_cost,"NUMERIC(10,2)",YES,,,,TARGET,ambiguous without a stream dimension - fees vary by stream
+visa_subclasses,points_test_required,BOOLEAN,NO,,,,TARGET,
+application_funnel,as_of_date,DATE,NO,,,,TARGET,
+application_funnel,granted_source_url,TEXT,YES,,,,TARGET,"second provenance trio, scoped to granted_count alone"
+application_funnel,granted_retrieved_at,TIMESTAMPTZ,YES,,,,TARGET,second provenance trio
+application_funnel,granted_reliability_tier,TEXT,YES,,,,TARGET,second provenance trio
+english_test_bands,id,INTEGER,NO,auto_increment,PK,,TARGET,
+english_test_bands,test_name,TEXT,NO,,UNIQUE (composite),,TARGET,"e.g. IELTS, PTE Academic"
+english_test_bands,band_level,TEXT,NO,,UNIQUE (composite),,TARGET,Functional/Vocational/Competent/Proficient/Superior
+english_test_bands,score_requirement,TEXT,NO,,,,TARGET,
+english_test_bands,points_awarded,INTEGER,NO,,,,TARGET,"0, 10, or 20"
+english_test_bands,cost,TEXT,YES,,,,TARGET,
+english_test_bands,validity_period,TEXT,YES,,,,TARGET,
+english_test_bands,source_url,TEXT,NO,,,,TARGET,provenance trio
+english_test_bands,retrieved_at,TIMESTAMPTZ,NO,,,,TARGET,provenance trio
+english_test_bands,reliability_tier,TEXT,NO,official_scraped,,,TARGET,provenance trio
+assessing_bodies,body_name,TEXT,NO,,PK,,TARGET,"e.g. ACS, Engineers Australia, VETASSESS"
+assessing_bodies,turnaround_estimate,TEXT,YES,,,,TARGET,NO SOURCE - ~38 separate sites
+assessing_bodies,cost,TEXT,YES,,,,TARGET,NO SOURCE
+assessing_bodies,source_url,TEXT,NO,,,,TARGET,provenance trio
+assessing_bodies,retrieved_at,TIMESTAMPTZ,NO,,,,TARGET,provenance trio
+assessing_bodies,reliability_tier,TEXT,NO,official_curated,,,TARGET,provenance trio
+occupation_assessing_bodies,occupation_code,TEXT,NO,,"PK (composite), FK",occupations.code,TARGET,
+occupation_assessing_bodies,body_name,TEXT,NO,,"PK (composite), FK",assessing_bodies.body_name,TARGET,Table 5 keys by abbreviation vs Table 6's full name - needs explicit mapping
+occupation_assessing_bodies,source_url,TEXT,NO,,,,TARGET,provenance trio
+occupation_assessing_bodies,retrieved_at,TIMESTAMPTZ,NO,,,,TARGET,provenance trio
+occupation_assessing_bodies,reliability_tier,TEXT,NO,official_curated,,,TARGET,provenance trio
+points_criteria_reference,id,INTEGER,NO,auto_increment,PK,,TARGET,
+points_criteria_reference,criterion_name,TEXT,NO,,UNIQUE (composite),,TARGET,"e.g. Age, English Language Ability"
+points_criteria_reference,band_description,TEXT,NO,,UNIQUE (composite),,TARGET,e.g. 18-24 years
+points_criteria_reference,points_value,INTEGER,NO,,,,TARGET,
+points_criteria_reference,source_url,TEXT,NO,,,,TARGET,provenance trio
+points_criteria_reference,retrieved_at,TIMESTAMPTZ,NO,,,,TARGET,provenance trio
+points_criteria_reference,reliability_tier,TEXT,NO,official_scraped,,,TARGET,provenance trio
+policy_events,id,INTEGER,NO,auto_increment,PK,,TARGET,
+policy_events,event_date,DATE,NO,,,,TARGET,
+policy_events,visa_code,TEXT,YES,,FK,visa_subclasses.code,TARGET,nullable - national events don't target one visa
+policy_events,title,TEXT,NO,,,,TARGET,
+policy_events,description,TEXT,NO,,,,TARGET,
+policy_events,source_url,TEXT,NO,,,,TARGET,provenance trio
+policy_events,retrieved_at,TIMESTAMPTZ,NO,,,,TARGET,provenance trio
+policy_events,reliability_tier,TEXT,NO,official_curated,,,TARGET,provenance trio
+state_nomination_status,id,INTEGER,NO,auto_increment,PK,,TARGET,
+state_nomination_status,state_code,TEXT,NO,,,,TARGET,NSW/VIC/QLD/WA/SA
+state_nomination_status,occupation_code,TEXT,NO,,FK,occupations.code,TARGET,"NSW joins at 4-digit, QLD at 6-digit - FK can't assume one width"
+state_nomination_status,status,TEXT,NO,,,,TARGET,open/limited/closed
+state_nomination_status,fee,TEXT,YES,,,,TARGET,NO SOURCE on any state page
+state_nomination_status,points_minimum,INTEGER,YES,,,,TARGET,NO SOURCE
+state_nomination_status,job_offer_required,BOOLEAN,NO,false,,,TARGET,NO SOURCE
+state_nomination_status,residency_commitment_description,TEXT,YES,,,,TARGET,NO SOURCE
+state_nomination_status,decision_time_estimate,TEXT,YES,,,,TARGET,NO SOURCE
+state_nomination_status,documents_required,JSONB,YES,,,,TARGET,"NO SOURCE, display-only checklist"
+state_nomination_status,approval_pattern_note,TEXT,YES,,,,TARGET,
+state_nomination_status,as_of_date,DATE,NO,,UNIQUE (composite),,TARGET,
+state_nomination_status,source_url,TEXT,NO,,,,TARGET,provenance trio
+state_nomination_status,retrieved_at,TIMESTAMPTZ,NO,,,,TARGET,provenance trio
+state_nomination_status,reliability_tier,TEXT,NO,official_curated,,,TARGET,provenance trio
+list_change_log,id,INTEGER,NO,auto_increment,PK,,TARGET,
+list_change_log,list_name,TEXT,NO,,UNIQUE (composite),,TARGET,MLTSSL/STSOL/ROL or a state code
+list_change_log,occupation_code,TEXT,NO,,"FK, UNIQUE (composite)",occupations.code,TARGET,
+list_change_log,change_type,TEXT,NO,,UNIQUE (composite),,TARGET,added/removed
+list_change_log,effective_date,DATE,NO,,UNIQUE (composite),,TARGET,"from the OData API (source 23), not inferred"
+list_change_log,source_url,TEXT,NO,,,,TARGET,provenance trio
+list_change_log,retrieved_at,TIMESTAMPTZ,NO,,,,TARGET,provenance trio
+list_change_log,reliability_tier,TEXT,NO,official_scraped,,,TARGET,provenance trio
+processing_times,id,INTEGER,NO,auto_increment,PK,,TARGET,
+processing_times,visa_code,TEXT,NO,,"FK, UNIQUE (composite)",visa_subclasses.code,TARGET,
+processing_times,as_of_date,DATE,NO,,UNIQUE (composite),,TARGET,not in the API payload - derive from fetch time
+processing_times,median_days,INTEGER,NO,,,,TARGET,"NEEDS RE-MODELLING - API returns a percentile distribution, not a median"
+processing_times,source_url,TEXT,NO,,,,TARGET,provenance trio
+processing_times,retrieved_at,TIMESTAMPTZ,NO,,,,TARGET,provenance trio
+processing_times,reliability_tier,TEXT,NO,official_scraped,,,TARGET,provenance trio
+processing_times,stream,TEXT,NO,,MISSING - blocks build,,TARGET,not yet in the schema; without it 485/500/482/186 collide on the current unique key
+program_allocation,id,INTEGER,NO,auto_increment,PK,,TARGET,
+program_allocation,program_year,TEXT,NO,,UNIQUE (composite),,TARGET,e.g. 2025-26
+program_allocation,stream_name,TEXT,NO,,UNIQUE (composite),,TARGET,e.g. Skilled Independent (189)
+program_allocation,places,INTEGER,NO,,,,TARGET,
+program_allocation,source_url,TEXT,NO,,,,TARGET,provenance trio
+program_allocation,retrieved_at,TIMESTAMPTZ,NO,,,,TARGET,provenance trio
+program_allocation,reliability_tier,TEXT,NO,official_curated,,,TARGET,provenance trio
+eligibility_requirements,id,INTEGER,NO,auto_increment,PK,,TARGET,
+eligibility_requirements,requirement_type,TEXT,NO,,UNIQUE,,TARGET,health/character/english_language
+eligibility_requirements,summary,TEXT,NO,,,,TARGET,curated prose summary
+eligibility_requirements,source_url,TEXT,NO,,,,TARGET,provenance trio
+eligibility_requirements,retrieved_at,TIMESTAMPTZ,NO,,,,TARGET,provenance trio
+eligibility_requirements,reliability_tier,TEXT,NO,official_curated,,,TARGET,provenance trio
+skills_priority_ratings,id,INTEGER,NO,auto_increment,PK,,TARGET,
+skills_priority_ratings,occupation_code,TEXT,NO,,"FK, UNIQUE (composite)",occupations.code,TARGET,
+skills_priority_ratings,shortage_rating,TEXT,NO,,,,TARGET,S/M/R/NS - confirmed vocabulary (Ns in payload is a casing bug)
+skills_priority_ratings,future_demand_rating,TEXT,YES,,,,TARGET,NO SOURCE - JSA's field is null throughout
+skills_priority_ratings,as_of_date,DATE,NO,,UNIQUE (composite),,TARGET,
+skills_priority_ratings,source_url,TEXT,NO,,,,TARGET,provenance trio
+skills_priority_ratings,retrieved_at,TIMESTAMPTZ,NO,,,,TARGET,provenance trio
+skills_priority_ratings,reliability_tier,TEXT,NO,official_scraped,,,TARGET,provenance trio
+anzsco_osca_crosswalk,id,INTEGER,NO,auto_increment,PK,,TARGET,
+anzsco_osca_crosswalk,anzsco_code,TEXT,NO,,FK,occupations.code,TARGET,
+anzsco_osca_crosswalk,anzsco_edition,TEXT,NO,,,,TARGET,2013 | 2022
+anzsco_osca_crosswalk,osca_code,TEXT,NO,,,,TARGET,OSCA 2024 code
+anzsco_osca_crosswalk,is_partial_match,BOOLEAN,NO,false,,,TARGET,ABS's 'p' flag - not one-to-one
+anzsco_osca_crosswalk,source_url,TEXT,NO,,,,TARGET,provenance trio
+anzsco_osca_crosswalk,retrieved_at,TIMESTAMPTZ,NO,,,,TARGET,provenance trio
+anzsco_osca_crosswalk,reliability_tier,TEXT,NO,,,,TARGET,provenance trio
+occupation_list_membership,id,INTEGER,NO,auto_increment,PK,,TARGET,
+occupation_list_membership,list_name,TEXT,NO,,UNIQUE (composite),,TARGET,MLTSSL/STSOL/ROL/CSOL
+occupation_list_membership,occupation_code,TEXT,NO,,"FK, UNIQUE (composite)",occupations.code,TARGET,
+occupation_list_membership,anzsco_edition,TEXT,NO,,,,TARGET,"LIN 19/051=2013, CSOL=2022"
+occupation_list_membership,compilation_date,DATE,NO,,UNIQUE (composite),,TARGET,"verified volumes: MLTSSL 212, STSOL 215, ROL 77"
+occupation_list_membership,source_url,TEXT,NO,,,,TARGET,provenance trio
+occupation_list_membership,retrieved_at,TIMESTAMPTZ,NO,,,,TARGET,provenance trio
+occupation_list_membership,reliability_tier,TEXT,NO,,,,TARGET,provenance trio
+visa_fees,id,INTEGER,NO,auto_increment,PK,,TARGET,
+visa_fees,visa_code,TEXT,NO,,FK,visa_subclasses.code,TARGET,
+visa_fees,stream,TEXT,YES,,,,TARGET,fees differ per stream
+visa_fees,applicant_type,TEXT,NO,,,,TARGET,primary/secondary/child
+visa_fees,amount_aud,"NUMERIC(10,2)",NO,,,,TARGET,
+visa_fees,effective_date,DATE,NO,,,,TARGET,indexed annually on 1 July
+visa_fees,source_url,TEXT,NO,,,,TARGET,provenance trio
+visa_fees,retrieved_at,TIMESTAMPTZ,NO,,,,TARGET,provenance trio
+visa_fees,reliability_tier,TEXT,NO,,,,TARGET,provenance trio
+sources,source_id,TEXT,NO,,PK,,DEFERRED,
+sources,name,TEXT,NO,,,,DEFERRED,
+sources,description,TEXT,YES,,,,DEFERRED,
+sources,domain,TEXT,NO,,,,DEFERRED,e.g. homeaffairs.gov.au
+sources,created_at,TIMESTAMPTZ,NO,now(),,,DEFERRED,
+sources,updated_at,TIMESTAMPTZ,NO,now(),,,DEFERRED,
+resources,resource_id,TEXT,NO,,PK,,DEFERRED,
+resources,source_id,TEXT,NO,,FK,sources.source_id,DEFERRED,
+resources,resource_type,TEXT,NO,,,,DEFERRED,url/pdf/api/file
+resources,locator,JSONB,NO,,,,DEFERRED,"{url, method, headers}"
+resources,acquisition_strategy,TEXT,NO,,,,DEFERRED,http/browser/api_client/managed
+resources,created_at,TIMESTAMPTZ,NO,now(),,,DEFERRED,
+resources,updated_at,TIMESTAMPTZ,NO,now(),,,DEFERRED,
+extraction_strategies,strategy_id,TEXT,NO,,PK,,DEFERRED,
+extraction_strategies,resource_id,TEXT,NO,,FK,resources.resource_id,DEFERRED,
+extraction_strategies,strategy_type,TEXT,NO,,,,DEFERRED,hidden_field_json/json_api/xlsx_pivot_cache/epub_table_positional/...
+extraction_strategies,provider,TEXT,NO,,,,DEFERRED,custom/firecrawl/apify/zyte/llm
+extraction_strategies,priority,INTEGER,NO,1,,,DEFERRED,fallback order
+extraction_strategies,config,JSONB,NO,{},,,DEFERRED,"e.g. json_root_key, table_index, rowspan_aware"
+extraction_strategies,enabled,BOOLEAN,NO,true,,,DEFERRED,
+extraction_strategies,created_at,TIMESTAMPTZ,NO,now(),,,DEFERRED,
+contracts,contract_id,TEXT,NO,,PK,,DEFERRED,
+contracts,name,TEXT,NO,,,,DEFERRED,e.g. VisaFeeRecord
+contracts,version,TEXT,NO,,,,DEFERRED,e.g. v1
+contracts,schema,JSONB,NO,,,,DEFERRED,Pydantic model as JSON Schema
+contracts,domain,TEXT,NO,,,,DEFERRED,visa/occupation/state/reference/editorial/aggregate
+contracts,created_at,TIMESTAMPTZ,NO,now(),,,DEFERRED,
+contracts,updated_at,TIMESTAMPTZ,NO,now(),,,DEFERRED,
+quality_policies,policy_id,TEXT,NO,,PK,,DEFERRED,
+quality_policies,contract_id,TEXT,NO,,FK,contracts.contract_id,DEFERRED,
+quality_policies,expected_min_records,INTEGER,YES,,,,DEFERRED,
+quality_policies,expected_max_records,INTEGER,YES,,,,DEFERRED,
+quality_policies,max_change_percent,"NUMERIC(5,2)",YES,,,,DEFERRED,
+quality_policies,required_fields,TEXT[],YES,,,,DEFERRED,
+quality_policies,uniqueness_fields,TEXT[],YES,,,,DEFERRED,natural key columns
+quality_policies,block_on,TEXT[],NO,{},,,DEFERRED,"schema_error, required_field_missing, duplicate_primary_key, ..."
+quality_policies,created_at,TIMESTAMPTZ,NO,now(),,,DEFERRED,
+quality_policies,updated_at,TIMESTAMPTZ,NO,now(),,,DEFERRED,
+schedules,schedule_id,TEXT,NO,,PK,,DEFERRED,
+schedules,source_id,TEXT,NO,,FK,sources.source_id,DEFERRED,
+schedules,cadence,TEXT,NO,,,,DEFERRED,daily/weekly/monthly/quarterly/annual/on_demand
+schedules,freshness_sla,INTERVAL,YES,,,,DEFERRED,e.g. '1 day'
+schedules,priority,INTEGER,NO,5,,,DEFERRED,1-10
+schedules,enabled,BOOLEAN,NO,true,,,DEFERRED,
+schedules,created_at,TIMESTAMPTZ,NO,now(),,,DEFERRED,
+snapshots,snapshot_id,UUID,NO,gen_random_uuid(),PK,,DEFERRED,
+snapshots,source_id,TEXT,NO,,FK,sources.source_id,DEFERRED,
+snapshots,resource_id,TEXT,NO,,FK,resources.resource_id,DEFERRED,
+snapshots,retrieved_at,TIMESTAMPTZ,NO,,,,DEFERRED,
+snapshots,acquisition_strategy,TEXT,NO,,,,DEFERRED,
+snapshots,content_hash,TEXT,NO,,,,DEFERRED,SHA-256 of raw response bytes
+snapshots,storage_path,TEXT,NO,,,,DEFERRED,GCS or local filesystem path
+snapshots,http_status,INTEGER,YES,,,,DEFERRED,
+snapshots,content_type,TEXT,YES,,,,DEFERRED,
+snapshots,request_headers,JSONB,YES,,,,DEFERRED,
+snapshots,response_headers,JSONB,YES,,,,DEFERRED,
+snapshots,etag,TEXT,YES,,,,DEFERRED,
+snapshots,last_modified,TEXT,YES,,,,DEFERRED,
+snapshots,content_size_bytes,INTEGER,YES,,,,DEFERRED,
+snapshots,acquisition_duration_ms,INTEGER,YES,,,,DEFERRED,
+snapshot_manifests,manifest_id,UUID,NO,gen_random_uuid(),PK,,DEFERRED,
+snapshot_manifests,snapshot_id,UUID,NO,,FK,snapshots.snapshot_id,DEFERRED,
+snapshot_manifests,run_id,UUID,YES,,FK,pipeline_runs.run_id,DEFERRED,
+snapshot_manifests,payload,JSONB,NO,,,,DEFERRED,full manifest JSON
+pipeline_runs,run_id,UUID,NO,gen_random_uuid(),PK,,DEFERRED,
+pipeline_runs,parent_run_id,UUID,YES,,FK (self),pipeline_runs.run_id,DEFERRED,nested tasks
+pipeline_runs,run_type,TEXT,NO,,,,DEFERRED,acquisition/extraction/validation/quality/publication
+pipeline_runs,source_id,TEXT,YES,,FK,sources.source_id,DEFERRED,
+pipeline_runs,resource_id,TEXT,YES,,,,DEFERRED,
+pipeline_runs,contract_id,TEXT,YES,,FK,contracts.contract_id,DEFERRED,
+pipeline_runs,snapshot_id,UUID,YES,,FK,snapshots.snapshot_id,DEFERRED,
+pipeline_runs,status,TEXT,NO,pending,,,DEFERRED,pending/running/success/failure/blocked/warning
+pipeline_runs,started_at,TIMESTAMPTZ,YES,,,,DEFERRED,
+pipeline_runs,finished_at,TIMESTAMPTZ,YES,,,,DEFERRED,
+pipeline_runs,input,JSONB,YES,,,,DEFERRED,
+pipeline_runs,output,JSONB,YES,,,,DEFERRED,"row counts, records produced"
+pipeline_runs,error,TEXT,YES,,,,DEFERRED,
+pipeline_runs,metadata,JSONB,YES,,,,DEFERRED,"provider used, retry count, duration"
+quarantine,quarantine_id,UUID,NO,gen_random_uuid(),PK,,DEFERRED,
+quarantine,run_id,UUID,NO,,FK,pipeline_runs.run_id,DEFERRED,
+quarantine,contract_id,TEXT,NO,,FK,contracts.contract_id,DEFERRED,
+quarantine,record_payload,JSONB,NO,,,,DEFERRED,the rejected record
+quarantine,rejection_reasons,TEXT,NO,,,,DEFERRED,comma-separated failure identifiers
+quarantine,severity,TEXT,NO,,,,DEFERRED,INFO/WARNING/ERROR/BLOCKER
+quarantine,quarantined_at,TIMESTAMPTZ,NO,now(),,,DEFERRED,
+dataset_releases,release_id,UUID,NO,gen_random_uuid(),PK,,DEFERRED,
+dataset_releases,created_at,TIMESTAMPTZ,NO,now(),,,DEFERRED,
+dataset_releases,status,TEXT,NO,,,,DEFERRED,complete/partial/degraded
+dataset_releases,contract_id,TEXT,NO,,FK,contracts.contract_id,DEFERRED,
+dataset_releases,pipeline_run_ids,UUID[],YES,,,"pipeline_runs.run_id (array, unenforced)",DEFERRED,
+dataset_releases,metadata,JSONB,YES,,,,DEFERRED,
+dataset_releases,is_current,BOOLEAN,NO,false,,,DEFERRED,only one row per contract_id should be true
+dataset_releases,previous_release_id,UUID,YES,,FK (self),dataset_releases.release_id,DEFERRED,rollback chain

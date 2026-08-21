@@ -46,7 +46,7 @@
 > deviations read as bugs to the next person, so they are written down where
 > someone will actually hit them.
 >
-> **9 tables are live.** If you want the real schema, skip to
+> **8 tables are live.** If you want the real schema, skip to
 > [C1](#c1-occupations) — every table in §C carries its own Built/Target
 > status. Sections **A** (Control Plane, 6 tables) and **B**
 > (Data/Execution Plane, 5 tables) below are **0% built** — see each
@@ -1833,7 +1833,8 @@ Actual chain to date:
 **Total: 33 entities** (6 control-plane, 5 data-plane, 22 domain-fact) —
 C19–C22 were added by the 2026-08-17 audit.
 
-**Built as of 2026-08-18: 9 tables** — C1–C6, C16, C22, plus `source_pages`.
+**Built as of 2026-08-18: 8 tables** — C1–C6 (`source_pages` is C5, not a
+separate ninth table), plus C16 and C22.
 Every other row above is specification, not code.
 
 ---
