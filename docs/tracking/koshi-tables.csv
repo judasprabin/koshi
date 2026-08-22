@@ -1,0 +1,34 @@
+ref,table_name,plane,status,live_rows_2026_08_21,purpose,primary_source_ref,notes
+C1,occupations,domain,BUILT,1485,ANZSCO occupation master list - canonical occupation dimension,"1, 9a, 18",PK stays ANZSCO code (not migrating to OSCA). 5 rows are ANZSCO-2013-only (e.g. 394111 Cabinetmaker).
+C2,eoi_rounds,domain,BUILT,786,SkillSelect EOI invitation rounds - threshold points + invitations per visa/occupation/round,"2, 17","Unique key is on occupation_name_raw, not occupation_code (NULLs are distinct in Postgres). 0 unresolved as of 2026-08-18."
+C3,ceiling_usage,domain,BUILT (empty by design),0,Annual occupation ceiling utilization,3b (dead),Per-occupation ceilings not published anywhere at 6-digit grain. Two fabricated rows were removed 2026-08-18; seed file is now comment-only.
+C4,occupation_momentum,domain,BUILT,140,"Derived trend direction, computed from eoi_rounds threshold history",derived (from C2),Only table with no source_url - always reliability_tier='derived'.
+C5,source_pages,domain (metadata),BUILT,3,"Crawl registry - content hash, freshness, extraction watermark",all,last_extracted_at only advances after successful parse+persist - the anti-freeze watermark.
+C6,visa_subclasses,domain,BUILT (partial),62,Static reference facts per visa subclass,"21 (BP0068), 6a-f (target)","Built columns: code, name, visa_category + provenance trio. NOT built: family, permanence, age_limit, work_rights_description, family_inclusion_rule, residency_requirement_description, occupation_list_required, onward_pathway_code, base_application_cost, points_test_required. permanence has NO SOURCE anywhere found."
+C7,english_test_bands,domain,TARGET,,English test score bands and migration points,"22a, 22b",Re-sourced from legislation (source 7's HA page is prose-only).
+C8,assessing_bodies,domain,TARGET,,Skills assessing authorities,13,"turnaround_estimate/cost have NO SOURCE - ~38 separate sites, ship NULL."
+C9,occupation_assessing_bodies,domain,TARGET,,Many-to-many join: occupation <-> assessing body,13,"Table 5 keys by abbreviation, assessing_bodies by full name - needs an explicit mapping. Some occupations specify 'either body' (disjunction, not expressible as plain rows)."
+C10,points_criteria_reference,domain,TARGET,,GSM points test - what earns how many points,5,Single table covers 189/190/491 - not per-subclass.
+C11,policy_events,domain,TARGET,,Editorial log of budget/legislative/program changes,14a-d,Primary URL is a soft-404; stays editorial by design.
+C12,state_nomination_status,domain,TARGET,,"Per-state, per-occupation nomination program status",11a-e,"Most columns (fee, points, job-offer, decision time, documents) have NO SOURCE on any state page. Deliberately built last (highest curation effort)."
+C13,list_change_log,domain,TARGET,,Occupations added/removed from MLTSSL/STSOL/ROL/state lists,"23, 12a-d","Register serves compilations, not diffs - needs OData API (source 23) or diffing C20 across compilation_dates."
+C14,processing_times,domain,TARGET,,Visa processing time estimates,8,"API returns a percentile distribution, not a median - median_days needs re-modelling. Current unique key has no stream column - 76 combos will collide on load without adding one."
+C15,program_allocation,domain,TARGET,,Annual migration program planning levels by stream,3,"Buildable today - the planning-levels page has no PDFs, full 3-year table is in hidden-field JSON."
+C16,application_funnel,domain,BUILT (partial),432,Application volumes per funnel stage (submitted/invited/granted),"21 (BP0068), 15 (target)","Built: (visa_code, program_year) + granted_count + one provenance trio, 1,710,097 total grants. NOT built: submitted_count (NO SOURCE, permanent NULL), invited_count (pending grain reconciliation with eoi_rounds), the second provenance trio, as_of_date. No non-negative check on granted_count - BP0068 is confidentialised (one real row is -2)."
+C17,eligibility_requirements,domain,TARGET,,Prose reference for health/character/English requirements,7a-c,"3 rows, near-static, buildable today from decoded prose."
+C18,skills_priority_ratings,domain,TARGET,,JSA occupation shortage/future-demand ratings,10,shortage_rating vocabulary confirmed (S/M/R/NS). future_demand_rating has NO SOURCE - JSA's field is null throughout.
+C19,anzsco_osca_crosswalk,domain,TARGET,,Carries ANZSCO<->OSCA relationship without migrating occupations' PK,19,Not one-to-one - ABS marks partial matches with a 'p' flag.
+C20,occupation_list_membership,domain,TARGET,,"Current membership of MLTSSL/STSOL/ROL/CSOL (point-in-time, not a diff)","9a, 9b",Added because list_change_log alone has no way to store present-day membership. list_change_log becomes derivative of this (diff two compilation_dates).
+C21,visa_fees,domain,TARGET,,"Per-subclass, per-stream visa fees",4,Promoted off visa_subclasses - 150 fee records can't live as one scalar column on a 6-row table.
+C22,occupation_titles,domain,BUILT,1929,Name->code crosswalk (LIN-first resolution) that unblocks eoi_rounds,20,"Deliberately has NO FK to occupations.code - it's a reference mapping that legitimately names codes occupations doesn't carry (an FK would abort loading on those rows). Added by the 2026-08-17 audit, not in the original A/B/C plan."
+A1,sources,control,DEFERRED,,Registry of every external data source koshi acquires from,N/A - control-plane registry,Build when source count is well past today's 6.
+A2,resources,control,DEFERRED,,Each physical resource (URL/PDF/API/file) belonging to a source,N/A,
+A3,extraction_strategies,control,DEFERRED,,"How a resource gets extracted - parser/provider/strategy, priority order",N/A,json_root_key and table_index config keys are load-bearing per the audit (Home Affairs pages vary root key; LIN tables are positional).
+A4,contracts,control,DEFERRED,,Canonical Pydantic schema for a domain record,N/A,
+A5,quality_policies,control,DEFERRED,,"Per-contract quality rules - row-count expectations, uniqueness, blocking severity",N/A,
+A6,schedules,control,DEFERRED,,Cadence and freshness SLA per source,N/A,Build when scheduling stops being manual (python -m koshi run by hand).
+B1,snapshots,data/execution,DEFERRED,,Immutable raw source artifact (Bronze layer) - enables replay without re-fetch,N/A,Build when replay-without-refetch or snapshot diffing is actually needed.
+B2,snapshot_manifests,data/execution,DEFERRED,,"manifest.json metadata from each acquisition, queryable",N/A,
+B3,pipeline_runs,data/execution,DEFERRED,,Unified lineage table across all ETL stages,N/A,
+B4,quarantine,data/execution,DEFERRED,,"Records rejected by quality gates, for human review + replay",N/A,Build when a bad row reaching the API unnoticed becomes a real problem.
+B5,dataset_releases,data/execution,DEFERRED,,"Versioned publication of a contract's data, supports rollback",N/A,

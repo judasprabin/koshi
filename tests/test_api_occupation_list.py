@@ -84,3 +84,55 @@ def test_list_occupations_rejects_unrecognized_sort_value(db_session, client):
     response = client.get("/v1/occupations?sort=bogus")
 
     assert response.status_code == 422
+
+
+def test_list_occupations_uses_the_latest_momentum_row_per_occupation(db_session, client):
+    """docs/structural-review.md Problem 5: list_occupations batches its
+    momentum lookup into one query instead of one-per-occupation. The batch
+    query must still pick each occupation's *latest* row by computed_at,
+    not an arbitrary one — this is the part a naive GROUP BY/DISTINCT
+    rewrite is most likely to get wrong."""
+    db_session.add(
+        Occupation(
+            code="261313", name="Software Engineer", unit_group="2613",
+            source_url="https://example.gov.au", retrieved_at=dt.datetime.now(dt.timezone.utc),
+            reliability_tier="official_scraped",
+        )
+    )
+    db_session.add(
+        Occupation(
+            code="254499", name="Registered Nurse (Aged Care)", unit_group="2544",
+            source_url="https://example.gov.au", retrieved_at=dt.datetime.now(dt.timezone.utc),
+            reliability_tier="official_scraped",
+        )
+    )
+    db_session.commit()
+
+    now = dt.datetime.now(dt.timezone.utc)
+    db_session.add_all(
+        [
+            # 261313 has three rounds of momentum; only the newest (rising)
+            # should win.
+            OccupationMomentum(
+                occupation_code="261313", computed_at=now - dt.timedelta(days=60),
+                direction="falling", reliability_tier="derived",
+            ),
+            OccupationMomentum(
+                occupation_code="261313", computed_at=now - dt.timedelta(days=30),
+                direction="steady", reliability_tier="derived",
+            ),
+            OccupationMomentum(
+                occupation_code="261313", computed_at=now,
+                direction="rising", reliability_tier="derived",
+            ),
+            # 254499 has no momentum row at all.
+        ]
+    )
+    db_session.commit()
+
+    response = client.get("/v1/occupations")
+
+    assert response.status_code == 200
+    by_code = {item["code"]: item["momentum"] for item in response.json()}
+    assert by_code["261313"] == "rising"
+    assert by_code["254499"] is None

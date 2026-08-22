@@ -8,6 +8,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import sessionmaker
 
 import koshi.pipeline as pipeline_module
+import koshi.syncs.anzsco as anzsco_sync_module
 from koshi.db import Base
 from koshi.models.eoi_rounds import EoiRound
 from koshi.models.occupation_momentum import OccupationMomentum
@@ -152,7 +153,12 @@ def test_sync_anzsco_occupations_persists_on_first_run(db_session):
 def test_sync_anzsco_occupations_follows_the_pager(db_session, monkeypatch):
     """The live listing is 12 cards over 103 pages. Without following the
     pager koshi loads 12 of 1,236 occupations."""
-    monkeypatch.setattr(pipeline_module, "ANZSCO_PAGE_INTERVAL_SECONDS", 0.0)
+    # ANZSCO_PAGE_INTERVAL_SECONDS now lives in koshi.syncs.anzsco (the
+    # pagination logic moved there in the pipeline.py -> syncs/ split;
+    # koshi.pipeline no longer defines it, and sync_anzsco_occupations
+    # resolves the name against its own module's globals, so patching
+    # pipeline_module here would silently do nothing).
+    monkeypatch.setattr(anzsco_sync_module, "ANZSCO_PAGE_INTERVAL_SECONDS", 0.0)
     pages = {
         0: _anzsco_page([("261313", "Software Engineer")], last_page=2),
         1: _anzsco_page([("254499", "Registered Nurse")], last_page=2),
