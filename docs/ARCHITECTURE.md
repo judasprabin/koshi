@@ -98,7 +98,7 @@ graph TB
         schemas["schemas/occupation.py<br/>Pydantic response models"]
     end
 
-    db[("Postgres<br/>9 tables")]
+    db[("Postgres<br/>8 tables")]
 
     main_entry --> pipeline
     pipeline --> fetch
@@ -225,7 +225,7 @@ should," "you can," "you're eligible," "you qualify," "you will").
 
 ## 4. Data model
 
-**Nine tables.** `source_pages` is metadata about pages, not a fact; the rest
+**Eight tables.** `source_pages` is metadata about pages, not a fact; the rest
 are fact tables and every one carries `source_url` / `retrieved_at` /
 `reliability_tier` (except `occupation_momentum`, which has no `source_url` —
 see §7).
