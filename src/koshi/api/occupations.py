@@ -23,20 +23,26 @@ def list_occupations(
 ) -> list[OccupationListItem]:
     occupations = session.scalars(select(Occupation).order_by(Occupation.code)).all()
 
-    items = []
-    for occupation in occupations:
-        latest_momentum = session.scalar(
-            select(OccupationMomentum)
-            .where(OccupationMomentum.occupation_code == occupation.code)
-            .order_by(OccupationMomentum.computed_at.desc())
+    # One query for every occupation's latest momentum row, instead of one
+    # query per occupation (docs/structural-review.md Problem 5 — this was
+    # 1,485 round-trips for 1,485 occupations). DISTINCT ON is
+    # Postgres-specific, which matches koshi's only supported backend
+    # (tests/conftest.py runs against real Postgres, never SQLite).
+    latest_momentum_rows = session.execute(
+        select(OccupationMomentum.occupation_code, OccupationMomentum.direction)
+        .distinct(OccupationMomentum.occupation_code)
+        .order_by(OccupationMomentum.occupation_code, OccupationMomentum.computed_at.desc())
+    ).all()
+    momentum_by_code = {row.occupation_code: row.direction for row in latest_momentum_rows}
+
+    items = [
+        OccupationListItem(
+            code=occupation.code,
+            name=occupation.name,
+            momentum=momentum_by_code.get(occupation.code),
         )
-        items.append(
-            OccupationListItem(
-                code=occupation.code,
-                name=occupation.name,
-                momentum=latest_momentum.direction if latest_momentum else None,
-            )
-        )
+        for occupation in occupations
+    ]
 
     if sort == "momentum":
         items.sort(key=lambda item: _MOMENTUM_SORT_ORDER.get(item.momentum, 3))
