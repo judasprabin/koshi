@@ -1,36 +1,38 @@
+"""Shared sync helpers, plus the stable import surface for every source.
+
+Per-source sync logic lives in `koshi.syncs.*` (docs/structural-review.md
+Problem 1) and URL/metadata registration lives in `koshi.sources`
+(Problem 2). This module is now two things only:
+
+1. Helpers genuinely shared by more than one sync module —
+   `_needs_extraction`, `_RowsWithSkipCount`, `refresh_momentum_for_codes`,
+   `_persist_rounds`, `resolve_round_occupation_codes`. These stay here
+   rather than in `koshi.syncs` because moving them there would just
+   relocate the god-module problem one level down, and because
+   `refresh_momentum_for_codes` must stay a plain module-level name here
+   for `tests/test_pipeline.py`'s `monkeypatch.setattr(pipeline_module,
+   "refresh_momentum", ...)` to keep intercepting it.
+2. A re-export of every `sync_*`/URL name that used to be defined here
+   directly, so `koshi.__main__` and existing tests don't need to change
+   their imports — only the file each function's *body* lives in moved.
+
+The shared-helper definitions above MUST stay before the `from
+koshi.syncs.* import ...` lines below: each syncs module imports these
+helpers back from `koshi.pipeline` at its own import time, and Python
+resolves that against this module's partially-built namespace — so the
+helpers have to already be bound by the time those imports run.
+"""
 import datetime as dt
 import logging
 
-import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from koshi.crawler.fetch import fetch_and_register, fetch_bytes, fetch_text
-from koshi.crosswalk import normalize_title, resolve_occupation_code
-from koshi.extraction.anzsco_occupations import (
-    ParseResult,
-    has_next_page,
-    parse_anzsco_occupations,
-)
-from koshi.extraction.abs_anzsco import (
-    ANZSCO_EDITION as ABS_ANZSCO_EDITION,
-    parse_abs_occupations,
-    parse_abs_titles,
-)
-from koshi.extraction.bp0068 import parse_bp0068_grants
-from koshi.extraction.lin19051 import parse_lin_titles
-from koshi.extraction.skillselect_previous_rounds import (
-    parse_skillselect_previous_rounds,
-)
-from koshi.extraction.skillselect_rounds import parse_skillselect_rounds
-from koshi.models.application_funnel import ApplicationFunnel
+from koshi.crosswalk import resolve_occupation_code
 from koshi.models.eoi_rounds import EoiRound
-from koshi.models.occupation_titles import OccupationTitle
 from koshi.models.occupations import Occupation
 from koshi.models.source_pages import SourcePage
-from koshi.models.visa_subclasses import VisaSubclass
 from koshi.momentum import refresh_momentum
-from koshi.resilience import Throttler
 
 logger = logging.getLogger(__name__)
 
@@ -52,36 +54,6 @@ class _RowsWithSkipCount(list):
     skipped: int = 0
 
 
-ANZSCO_URL = "https://www.jobsandskills.gov.au/data/occupation-and-industry-profiles/occupations-anzsco"
-SKILLSELECT_ROUNDS_URL = "https://immi.homeaffairs.gov.au/visas/working-in-australia/skillselect/invitation-rounds"
-SKILLSELECT_PREVIOUS_ROUNDS_URL = (
-    "https://immi.homeaffairs.gov.au/visas/working-in-australia/skillselect/previous-rounds"
-)
-# The instrument body, one iframe-hop from the register page. The date
-# segments pin the compilation; bump them when a new compilation lands.
-LIN19051_URL = (
-    "https://www.legislation.gov.au/F2019L00278/2026-03-28/2026-03-28"
-    "/text/original/epub/OEBPS/document_1/document_1.html"
-)
-BP0068_URL = (
-    "https://data.gov.au/data/dataset/096fd157-807c-4ba0-8c63-0754cae4ba35/resource/"
-    "832fe752-f672-4ce7-a5bc-bada2270496c/download/"
-    "bp0068-migration-and-child-outcome-since-2015-16-to-2025-06-30-masked-v100.xlsx"
-)
-ABS_ANZSCO_URL = (
-    "https://www.abs.gov.au/statistics/classifications/"
-    "anzsco-australian-and-new-zealand-standard-classification-occupations/2022/"
-    "anzsco%202022%20structure%20062023.xlsx"
-)
-
-# The live listing is 103 pages (1,236 results at 12 per page). The cap sits
-# above that as a runaway guard; it is not a deliberate truncation.
-ANZSCO_MAX_PAGES = 150
-# Politeness between sequential requests to a single government host. This
-# is the first koshi run that fetches many pages from one domain, and the
-# reason resilience.Throttler exists.
-ANZSCO_PAGE_INTERVAL_SECONDS = 1.0
-
 # A stand-in for "never extracted" that compares less than any real
 # last_changed_at, so a page with no last_extracted_at watermark always
 # looks due for extraction.
@@ -102,76 +74,6 @@ def _needs_extraction(page: SourcePage) -> bool:
     """
     watermark = page.last_extracted_at or _NEVER_EXTRACTED
     return page.last_changed_at > watermark
-
-
-def sync_anzsco_occupations(
-    session: Session,
-    *,
-    url: str = ANZSCO_URL,
-    client: httpx.Client | None = None,
-    max_pages: int = ANZSCO_MAX_PAGES,
-) -> list[Occupation]:
-    page, _changed, text = fetch_and_register(
-        session, url=url, domain="www.jobsandskills.gov.au", category="anzsco_occupations", client=client
-    )
-    if not _needs_extraction(page):
-        return []
-
-    retrieved_at = dt.datetime.now(dt.timezone.utc)
-    result = parse_anzsco_occupations(text, source_url=url, retrieved_at=retrieved_at)
-    rows = list(result.rows)
-    skipped = result.skipped
-
-    # The listing paginates at 12 cards over 103 pages: without following
-    # the pager koshi loads 12 of 1,236 occupations. Only page 1 is
-    # registered in source_pages — the pages change together, so 103
-    # registry rows would add no signal.
-    #
-    # max_pages is a guard against a pager loop, not a policy choice: it is
-    # set above the real page count, so hitting it means the page changed
-    # shape and is worth a warning.
-    throttle = Throttler(ANZSCO_PAGE_INTERVAL_SECONDS)
-    current = 0
-    while has_next_page(text, current_page=current) and current + 1 < max_pages:
-        current += 1
-        throttle.wait()
-        page_url = f"{url}?page={current}"
-        text = fetch_text(
-            page_url,
-            domain="www.jobsandskills.gov.au",
-            category="anzsco_occupations",
-            client=client,
-        )
-        page_result = parse_anzsco_occupations(
-            text, source_url=page_url, retrieved_at=retrieved_at
-        )
-        rows.extend(page_result.rows)
-        skipped += page_result.skipped
-    else:
-        if current + 1 >= max_pages and has_next_page(text, current_page=current):
-            logger.warning(
-                "anzsco_occupations: stopped at the %d-page cap with more pages "
-                "advertised — the pager may have changed shape",
-                max_pages,
-            )
-
-    result = ParseResult(rows=rows, skipped=skipped)
-    if result.skipped:
-        logger.warning("anzsco_occupations: skipped %d malformed row(s)", result.skipped)
-    logger.info(
-        "anzsco_occupations: parsed %d occupations across %d page(s)",
-        len(result.rows), current + 1,
-    )
-    for occupation in result.rows:
-        session.merge(occupation)
-    # Only advance the extraction watermark once parsing AND persisting
-    # have both succeeded — if parse_anzsco_occupations raised above, this
-    # line (and the commit) never runs, so the next sync retries.
-    page.last_extracted_at = dt.datetime.now(dt.timezone.utc)
-    session.commit()
-    rows = _RowsWithSkipCount(result.rows)
-    rows.skipped = result.skipped
-    return rows
 
 
 def refresh_momentum_for_codes(session: Session, codes: set[str]) -> None:
@@ -199,187 +101,6 @@ def refresh_momentum_for_codes(session: Session, codes: set[str]) -> None:
             # into every occupation processed afterward.
             session.rollback()
             logger.exception("momentum refresh failed for occupation_code=%s", code)
-
-
-def sync_abs_occupations(
-    session: Session, *, url: str = ABS_ANZSCO_URL, client: httpx.Client | None = None
-) -> list[Occupation]:
-    """Load the occupation set from the ABS classification (Table 5).
-
-    The JSA listing is a *browse UI*, and it surfaces only 878 of ANZSCO's
-    1,076 six-digit occupations. That shortfall is not cosmetic: a live
-    invitation round referenced 23 occupations that resolve to perfectly
-    valid ANZSCO codes which simply were not in the JSA grid, so their
-    rounds could not be linked at all.
-
-    ABS is the classification's custodian, so its Table 5 is the
-    authoritative occupation universe. JSA remains synced because it also
-    publishes 4-digit unit groups (which NSW's list joins on) and is the
-    cadence signal; the two merge by primary key.
-    """
-    retrieved_at = dt.datetime.now(dt.timezone.utc)
-    workbook = fetch_bytes(url, domain="www.abs.gov.au", category="abs_anzsco", client=client)
-    result = parse_abs_occupations(workbook)
-
-    written: list[Occupation] = []
-    for row in result.rows:
-        session.merge(
-            Occupation(
-                code=row.occupation_code,
-                name=row.title,
-                unit_group=row.occupation_code[:4],
-                code_grain="occupation",
-                anzsco_edition=ABS_ANZSCO_EDITION,
-                source_url=url,
-                retrieved_at=retrieved_at,
-                reliability_tier="official_scraped",
-            )
-        )
-        written.append(row)
-    session.commit()
-    logger.info("abs_occupations: merged %d occupations", len(written))
-    rows = _RowsWithSkipCount(written)
-    rows.skipped = result.skipped
-    return rows
-
-
-def sync_occupation_titles(
-    session: Session,
-    *,
-    lin_url: str = LIN19051_URL,
-    abs_url: str = ABS_ANZSCO_URL,
-    client: httpx.Client | None = None,
-) -> list[OccupationTitle]:
-    """Load the name->code crosswalk from both sources.
-
-    Upserts by (title_normalized, title_source), so re-running replaces a
-    source's mapping in place rather than accumulating duplicates.
-
-    Both sources are loaded because neither is sufficient: against a live
-    invitation round, each resolves 132/140 on its own and their union
-    resolves 140/140.
-    """
-    retrieved_at = dt.datetime.now(dt.timezone.utc)
-    staged: dict[tuple[str, str], OccupationTitle] = {}
-
-    lin_html = fetch_text(
-        lin_url, domain="www.legislation.gov.au", category="lin19051", client=client
-    )
-    for row in parse_lin_titles(lin_html).rows:
-        key = (normalize_title(row.title), "LIN_19_051")
-        staged.setdefault(key, OccupationTitle(
-            title=row.title, title_normalized=key[0],
-            occupation_code=row.occupation_code, title_source="LIN_19_051",
-            anzsco_edition=row.anzsco_edition, source_url=lin_url,
-            retrieved_at=retrieved_at, reliability_tier="official_scraped",
-        ))
-
-    abs_bytes = fetch_bytes(
-        abs_url, domain="www.abs.gov.au", category="abs_anzsco", client=client
-    )
-    for row in parse_abs_titles(abs_bytes).rows:
-        key = (normalize_title(row.title), "ABS_ANZSCO")
-        staged.setdefault(key, OccupationTitle(
-            title=row.title, title_normalized=key[0],
-            occupation_code=row.occupation_code, title_source="ABS_ANZSCO",
-            anzsco_edition=row.anzsco_edition, source_url=abs_url,
-            retrieved_at=retrieved_at, reliability_tier="official_scraped",
-        ))
-
-    # LIN 19/051 is coded against ANZSCO 2013 and names occupations the
-    # 2022 classification does not contain - Cabinetmaker (394111) is
-    # invited in live rounds and exists only there. Adding those as
-    # edition-tagged occupation rows is what lets such rounds link at all;
-    # without it the crosswalk resolves the name but the FK has no target.
-    #
-    # Only codes ABS does not already carry are added, so 2022 stays
-    # authoritative wherever the editions overlap.
-    existing_codes = {c for (c,) in session.execute(select(Occupation.code))}
-    edition_only = 0
-    for row in parse_lin_titles(lin_html).rows:
-        if row.occupation_code in existing_codes:
-            continue
-        session.merge(
-            Occupation(
-                code=row.occupation_code,
-                name=row.title,
-                unit_group=row.occupation_code[:4],
-                code_grain="occupation",
-                anzsco_edition=row.anzsco_edition,
-                source_url=lin_url,
-                retrieved_at=retrieved_at,
-                reliability_tier="official_scraped",
-            )
-        )
-        existing_codes.add(row.occupation_code)
-        edition_only += 1
-    if edition_only:
-        logger.info(
-            "occupation_titles: added %d ANZSCO-2013-only occupation(s) absent from 2022",
-            edition_only,
-        )
-
-    written: list[OccupationTitle] = []
-    for (normalized, source), row in staged.items():
-        existing = session.scalar(
-            select(OccupationTitle).where(
-                OccupationTitle.title_normalized == normalized,
-                OccupationTitle.title_source == source,
-            )
-        )
-        if existing is None:
-            session.add(row)
-            written.append(row)
-        elif existing.occupation_code != row.occupation_code:
-            existing.occupation_code = row.occupation_code
-            existing.retrieved_at = retrieved_at
-            written.append(existing)
-    session.commit()
-    logger.info(
-        "occupation_titles: %d staged, %d written", len(staged), len(written)
-    )
-    return written
-
-
-def sync_skillselect_previous_rounds(
-    session: Session,
-    *,
-    url: str = SKILLSELECT_PREVIOUS_ROUNDS_URL,
-    client: httpx.Client | None = None,
-) -> list[EoiRound]:
-    """Backfill historical EOI rounds from the previous-rounds archive.
-
-    The current-round page publishes one round; momentum needs a trailing
-    window of three, so without this every occupation's trend is null. Of
-    19 archived rounds, 4 carry occupation tables.
-    """
-    page, _changed, text = fetch_and_register(
-        session, url=url, domain="immi.homeaffairs.gov.au",
-        category="skillselect_previous_rounds", client=client,
-    )
-    if not _needs_extraction(page):
-        return []
-
-    result = parse_skillselect_previous_rounds(
-        text, source_url=url, retrieved_at=dt.datetime.now(dt.timezone.utc)
-    )
-    logger.info(
-        "previous_rounds: %d rounds parsed, %d summary-only, %d rows, %d skipped",
-        result.rounds_parsed, result.rounds_without_occupations,
-        len(result.rows), result.skipped,
-    )
-    resolve_round_occupation_codes(session, result.rows)
-    new_rounds = _persist_rounds(session, result.rows)
-
-    page.last_extracted_at = dt.datetime.now(dt.timezone.utc)
-    session.commit()
-
-    refresh_momentum_for_codes(
-        session, {r.occupation_code for r in new_rounds if r.occupation_code}
-    )
-    rows = _RowsWithSkipCount(new_rounds)
-    rows.skipped = result.skipped
-    return rows
 
 
 def _persist_rounds(session: Session, rounds: list[EoiRound]) -> list[EoiRound]:
@@ -415,109 +136,6 @@ def _persist_rounds(session: Session, rounds: list[EoiRound]) -> list[EoiRound]:
         staged_keys.add(key)
         new_rounds.append(round_)
     return new_rounds
-
-
-def sync_bp0068_grants(
-    session: Session, *, url: str = BP0068_URL, client: httpx.Client | None = None
-) -> list[ApplicationFunnel]:
-    """Load per-subclass, per-year grant counts from BP0068.
-
-    Populates `application_funnel.granted_count`, which the design had
-    expected to ship NULL. Also seeds `visa_subclasses`, which the funnel
-    needs as an FK parent and which nothing else in koshi supplied.
-
-    Upserts by (visa_code, program_year): the dataset is republished
-    annually with prior years restated, so a re-run must update rather than
-    duplicate.
-    """
-    retrieved_at = dt.datetime.now(dt.timezone.utc)
-    workbook = fetch_bytes(url, domain="data.gov.au", category="bp0068", client=client)
-    result = parse_bp0068_grants(workbook)
-
-    for code, name, category in sorted(
-        {(r.visa_code, r.visa_name, r.visa_category) for r in result.rows}
-    ):
-        session.merge(
-            VisaSubclass(
-                code=code, name=name, visa_category=category,
-                source_url=url, retrieved_at=retrieved_at,
-                reliability_tier="official_scraped",
-            )
-        )
-    session.flush()  # subclasses must exist before the funnel's FK is checked
-
-    written: list[ApplicationFunnel] = []
-    for row in result.rows:
-        existing = session.scalar(
-            select(ApplicationFunnel).where(
-                ApplicationFunnel.visa_code == row.visa_code,
-                ApplicationFunnel.program_year == row.program_year,
-            )
-        )
-        if existing is None:
-            record = ApplicationFunnel(
-                visa_code=row.visa_code,
-                program_year=row.program_year,
-                granted_count=row.granted_count,
-                source_url=url,
-                retrieved_at=retrieved_at,
-                reliability_tier="official_scraped",
-            )
-            session.add(record)
-            written.append(record)
-        elif existing.granted_count != row.granted_count:
-            existing.granted_count = row.granted_count
-            existing.retrieved_at = retrieved_at
-            written.append(existing)
-    session.commit()
-    logger.info(
-        "bp0068: %d records -> %d funnel rows (%d written)",
-        result.record_count, len(result.rows), len(written),
-    )
-    rows = _RowsWithSkipCount(written)
-    rows.skipped = result.skipped
-    return rows
-
-
-def backfill_unresolved_round_codes(session: Session) -> list[EoiRound]:
-    """Retry code resolution for stored rounds that never resolved.
-
-    Without this, a row unresolved once stays unresolved forever: the
-    source page has not changed, so `_needs_extraction` returns False and
-    the round is never revisited — even though the *crosswalk* may have
-    grown since (a new source, a new edition, a normalisation fix).
-
-    This is the case that actually bit: archived rounds naming
-    `Cabinetmaker` were persisted before LIN 19/051's ANZSCO-2013-only
-    occupations were loaded, so their FK target did not yet exist.
-
-    Momentum is refreshed for anything newly resolved, since a round that
-    only now has a code was not counted in any earlier trend.
-    """
-    pending = list(
-        session.scalars(select(EoiRound).where(EoiRound.occupation_code.is_(None)))
-    )
-    if not pending:
-        return []
-
-    resolved = [r for r in pending if _apply_code(session, r)]
-    session.commit()
-    logger.info(
-        "backfill: resolved %d of %d previously-unresolved round(s)",
-        len(resolved), len(pending),
-    )
-    refresh_momentum_for_codes(session, {r.occupation_code for r in resolved})
-    return resolved
-
-
-def _apply_code(session: Session, round_: EoiRound) -> bool:
-    """Resolve one round's code, honouring the occupations FK. Returns
-    whether a code was written."""
-    code = resolve_occupation_code(session, round_.occupation_name_raw)
-    if code is None or session.get(Occupation, code) is None:
-        return False
-    round_.occupation_code = code
-    return True
 
 
 def resolve_round_occupation_codes(session: Session, rounds: list[EoiRound]) -> int:
@@ -568,52 +186,31 @@ def resolve_round_occupation_codes(session: Session, rounds: list[EoiRound]) -> 
     return resolved
 
 
-def sync_skillselect_rounds(
-    session: Session,
-    *,
-    url: str = SKILLSELECT_ROUNDS_URL,
-    client: httpx.Client | None = None,
-) -> list[EoiRound]:
-    # visa_code is no longer a caller-supplied default: the parser reads the
-    # subclass from the page's own round-summary table, so the label can't
-    # drift from the data it describes.
-    page, _changed, text = fetch_and_register(
-        session, url=url, domain="immi.homeaffairs.gov.au", category="skillselect_rounds", client=client
-    )
-    if not _needs_extraction(page):
-        return []
+# --- Re-exports: sync functions now live in koshi.syncs.*; URL constants
+# now live in koshi.sources. Both are re-exported here unchanged so
+# koshi.__main__ and existing tests import from koshi.pipeline exactly as
+# before this split. ---
 
-    parse_result = parse_skillselect_rounds(
-        text,
-        source_url=url,
-        retrieved_at=dt.datetime.now(dt.timezone.utc),
-    )
-    if parse_result.skipped:
-        logger.warning("skillselect_rounds: skipped %d malformed row(s)", parse_result.skipped)
+from koshi.syncs.anzsco import sync_anzsco_occupations  # noqa: E402
+from koshi.syncs.abs import sync_abs_occupations  # noqa: E402
+from koshi.syncs.occupation_titles import sync_occupation_titles  # noqa: E402
+from koshi.syncs.skillselect import sync_skillselect_rounds  # noqa: E402
+from koshi.syncs.previous_rounds import sync_skillselect_previous_rounds  # noqa: E402
+from koshi.syncs.bp0068 import sync_bp0068_grants  # noqa: E402
+from koshi.syncs.backfill import backfill_unresolved_round_codes  # noqa: E402
 
-    resolve_round_occupation_codes(session, parse_result.rows)
+from koshi.sources import (  # noqa: E402
+    ABS_ANZSCO,
+    ANZSCO_OCCUPATIONS,
+    BP0068,
+    LIN19051,
+    SKILLSELECT_PREVIOUS_ROUNDS,
+    SKILLSELECT_ROUNDS,
+)
 
-    # Upsert by (visa_code, occupation_name_raw, round_date): a whole-page
-    # hash change (build stamp, "last reviewed" date) re-parses the same
-    # round data and must not manufacture duplicate rows / fake momentum.
-    # See _persist_rounds for why the key is the name and why in-batch
-    # dedup is also required. Shared with the previous-rounds sync, whose
-    # archive genuinely overlaps this page.
-    new_rounds = _persist_rounds(session, parse_result.rows)
-    # Only advance the extraction watermark once parsing AND persisting
-    # have both succeeded — see sync_anzsco_occupations above.
-    page.last_extracted_at = dt.datetime.now(dt.timezone.utc)
-    session.commit()
-
-    # NOTE: SkillSelect publishes occupation *names*, not ANZSCO codes, so
-    # every scraped round currently has occupation_code = NULL and this set
-    # is empty — momentum is not refreshed from scraping until the
-    # name->code crosswalk lands. The call stays wired up so the crosswalk
-    # is the only missing piece, and refresh_momentum_for_codes remains
-    # directly tested in the meantime.
-    new_codes = {r.occupation_code for r in new_rounds if r.occupation_code is not None}
-    refresh_momentum_for_codes(session, new_codes)
-
-    rows = _RowsWithSkipCount(new_rounds)
-    rows.skipped = parse_result.skipped
-    return rows
+ANZSCO_URL = ANZSCO_OCCUPATIONS.url
+SKILLSELECT_ROUNDS_URL = SKILLSELECT_ROUNDS.url
+SKILLSELECT_PREVIOUS_ROUNDS_URL = SKILLSELECT_PREVIOUS_ROUNDS.url
+LIN19051_URL = LIN19051.url
+BP0068_URL = BP0068.url
+ABS_ANZSCO_URL = ABS_ANZSCO.url
