@@ -27,6 +27,7 @@ def test_main_returns_0_when_all_steps_succeed(monkeypatch):
     monkeypatch.setattr(main_module, "sync_skillselect_rounds", lambda session: [1])
     monkeypatch.setattr(main_module, "sync_skillselect_previous_rounds", lambda session: [1])
     monkeypatch.setattr(main_module, "sync_bp0068_grants", lambda session: [])
+    monkeypatch.setattr(main_module, "sync_points_criteria", lambda session: [])
     monkeypatch.setattr(main_module, "backfill_unresolved_round_codes", lambda session: [])
     monkeypatch.setattr(main_module, "seed_ceiling_usage", lambda session, path: [1, 2, 3])
 
@@ -62,6 +63,10 @@ def test_main_returns_2_and_still_runs_remaining_steps_when_one_step_fails(monke
         calls.append("bp0068")
         return [1]
 
+    def ok_points(session):
+        calls.append("points")
+        return [1]
+
     def ok_backfill(session):
         calls.append("backfill")
         return []
@@ -77,13 +82,14 @@ def test_main_returns_2_and_still_runs_remaining_steps_when_one_step_fails(monke
     monkeypatch.setattr(main_module, "sync_skillselect_rounds", ok_sync)
     monkeypatch.setattr(main_module, "sync_skillselect_previous_rounds", ok_prev)
     monkeypatch.setattr(main_module, "sync_bp0068_grants", ok_bp)
+    monkeypatch.setattr(main_module, "sync_points_criteria", ok_points)
     monkeypatch.setattr(main_module, "backfill_unresolved_round_codes", ok_backfill)
     monkeypatch.setattr(main_module, "seed_ceiling_usage", ok_seed)
 
     exit_code = main_module.main()
 
     assert exit_code == 2
-    assert calls == ["anzsco", "abs", "titles", "skillselect", "prev", "bp0068", "backfill", "ceiling"]
+    assert calls == ["anzsco", "abs", "titles", "skillselect", "prev", "bp0068", "points", "backfill", "ceiling"]
 
 
 def test_main_returns_3_when_all_steps_fail(monkeypatch):
@@ -100,6 +106,7 @@ def test_main_returns_3_when_all_steps_fail(monkeypatch):
     monkeypatch.setattr(main_module, "sync_skillselect_rounds", failing)
     monkeypatch.setattr(main_module, "sync_skillselect_previous_rounds", failing)
     monkeypatch.setattr(main_module, "sync_bp0068_grants", failing)
+    monkeypatch.setattr(main_module, "sync_points_criteria", failing)
     monkeypatch.setattr(main_module, "backfill_unresolved_round_codes", failing)
     monkeypatch.setattr(main_module, "seed_ceiling_usage", failing)
 
@@ -161,6 +168,7 @@ def test_main_writes_a_run_summary_reflecting_each_steps_outcome(monkeypatch):
     monkeypatch.setattr(main_module, "sync_skillselect_rounds", lambda session: [])
     monkeypatch.setattr(main_module, "sync_skillselect_previous_rounds", lambda session: [])
     monkeypatch.setattr(main_module, "sync_bp0068_grants", lambda session: [])
+    monkeypatch.setattr(main_module, "sync_points_criteria", lambda session: [])
     monkeypatch.setattr(main_module, "backfill_unresolved_round_codes", lambda session: [])
     monkeypatch.setattr(main_module, "seed_ceiling_usage", lambda session, path: [])
     monkeypatch.setattr(main_module, "write_run_summary", fake_write_run_summary)
@@ -175,8 +183,9 @@ def test_main_writes_a_run_summary_reflecting_each_steps_outcome(monkeypatch):
     assert summary["steps"][3] == {"name": "skillselect_rounds", "status": "ok", "count": 0}
     assert summary["steps"][4] == {"name": "skillselect_previous_rounds", "status": "ok", "count": 0}
     assert summary["steps"][5] == {"name": "bp0068_grants", "status": "ok", "count": 0}
-    assert summary["steps"][6] == {"name": "backfill_round_codes", "status": "ok", "count": 0}
-    assert summary["steps"][7] == {"name": "ceiling_usage_seed", "status": "ok", "count": 0}
+    assert summary["steps"][6] == {"name": "points_criteria", "status": "ok", "count": 0}
+    assert summary["steps"][7] == {"name": "backfill_round_codes", "status": "ok", "count": 0}
+    assert summary["steps"][8] == {"name": "ceiling_usage_seed", "status": "ok", "count": 0}
     # finished_at/exit_code must land in the written summary, not just be
     # returned from main() — a summary file read after the fact is the
     # only observability a cron-triggered run has.
@@ -203,6 +212,7 @@ def test_main_writes_an_error_detail_for_a_failed_step(monkeypatch):
     monkeypatch.setattr(main_module, "sync_skillselect_rounds", lambda session: [])
     monkeypatch.setattr(main_module, "sync_skillselect_previous_rounds", lambda session: [])
     monkeypatch.setattr(main_module, "sync_bp0068_grants", lambda session: [])
+    monkeypatch.setattr(main_module, "sync_points_criteria", lambda session: [])
     monkeypatch.setattr(main_module, "backfill_unresolved_round_codes", lambda session: [])
     monkeypatch.setattr(main_module, "seed_ceiling_usage", lambda session, path: [])
     monkeypatch.setattr(main_module, "write_run_summary", fake_write_run_summary)
@@ -245,6 +255,7 @@ def test_main_threads_parser_skip_count_into_the_step_summary(monkeypatch):
     monkeypatch.setattr(main_module, "sync_skillselect_rounds", lambda session: skillselect_result)
     monkeypatch.setattr(main_module, "sync_skillselect_previous_rounds", lambda session: [])
     monkeypatch.setattr(main_module, "sync_bp0068_grants", lambda session: [])
+    monkeypatch.setattr(main_module, "sync_points_criteria", lambda session: [])
     monkeypatch.setattr(main_module, "backfill_unresolved_round_codes", lambda session: [])
     # ceiling_usage_seed returns a plain list in production (no parser skip
     # count to surface) — must not gain a "skipped" key from unrelated code.
@@ -256,4 +267,4 @@ def test_main_threads_parser_skip_count_into_the_step_summary(monkeypatch):
     steps = written["summary"]["steps"]
     assert steps[0]["skipped"] == 4
     assert steps[3]["skipped"] == 0
-    assert "skipped" not in steps[7]
+    assert "skipped" not in steps[8]
