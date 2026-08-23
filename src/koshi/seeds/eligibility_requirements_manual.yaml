@@ -1,0 +1,64 @@
+# eligibility_requirements — Tier 5 manual curation (issue #18).
+#
+# Three near-static prose pages, curated 2026-08-23. Unusually for koshi's
+# sources, each of the three uses a genuinely different page encoding — a
+# finding worth recording so a future re-verification doesn't assume they
+# match:
+#
+#   - health:            a Formio component-tree JSON (root key
+#                         `components`, prose in each component's `html`
+#                         field) — not the `content`/`block` shape
+#                         koshi's homeaffairs.py decoder handles.
+#   - character:          the standard hidden-field JSON shape (root key
+#                         `content`, `block` per item) — homeaffairs.py's
+#                         normal case, 8 content blocks on this page.
+#   - english_language:   plain server-rendered HTML — no hidden field at
+#                         all, prose sits directly in the page body.
+#
+# None of the three carry tabular data (source-urls.md §7 confirms "zero
+# tables on all three"), so there was never a parser to write regardless —
+# this seed is curated from a one-time read of each live page, the same
+# way ceiling_usage's (now-empty) seed was meant to be populated.
+
+- requirement_type: health
+  summary: >
+    Most visa applicants must meet a health requirement: being free from
+    any disease or condition that threatens public health or safety
+    (e.g. active tuberculosis), would impose significant healthcare or
+    community-service costs, or would limit Australian citizens' and
+    permanent residents' access to services in short supply. Applicants
+    may need health examinations assessed by a Medical Officer of the
+    Commonwealth (MOC), and a significant medical condition can lead to
+    a health undertaking being required. Dependants may also need to
+    meet the requirement even if they are not migrating to Australia.
+  source_url: "https://immi.homeaffairs.gov.au/help-support/meeting-our-requirements/health"
+  retrieved_at: "2026-08-23T00:00:00+00:00"
+
+- requirement_type: character
+  summary: >
+    Visa applicants and holders must pass the character test defined in
+    s501 of the Migration Act 1958, assessed under Ministerial Direction
+    No. 110. Failing the test can involve a substantial criminal record
+    or other conduct/associations of concern. A visa must be mandatorily
+    cancelled if the holder is serving a custodial sentence for an
+    offence carrying a life sentence, 12 months or more imprisonment, or
+    certain sexual offences against a person under 18 — with a 28-day
+    window to request revocation. Supporting documents such as police or
+    military certificates may be required, particularly for applicants
+    with service on ships or in the military.
+  source_url: "https://immi.homeaffairs.gov.au/help-support/meeting-our-requirements/character"
+  retrieved_at: "2026-08-23T00:00:00+00:00"
+
+- requirement_type: english_language
+  summary: >
+    Some visa applications require evidence of English language
+    proficiency from an approved test taken at a secure testing centre
+    (e.g. IELTS Academic/General Training, PTE Academic, TOEFL iBT, OET,
+    Cambridge C1 Advanced, CELPIP General, LANGUAGECERT Academic,
+    Michigan English Test). The approved test list changed on 7 August
+    2025; results from tests taken before that date may remain valid for
+    up to 3 years depending on the visa subclass. Required scores vary
+    by visa type and correspond to the points-test bands (Functional,
+    Vocational, Competent, Proficient, Superior English).
+  source_url: "https://immi.homeaffairs.gov.au/help-support/meeting-our-requirements/english-language"
+  retrieved_at: "2026-08-23T00:00:00+00:00"

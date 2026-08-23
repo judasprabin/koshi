@@ -8,8 +8,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from koshi.models.ceiling_usage import CeilingUsage
+from koshi.models.eligibility_requirements import EligibilityRequirement
 from koshi.provenance import require_provenance
 from koshi.resilience import isolated_item
+
+_VALID_REQUIREMENT_TYPES = {"health", "character", "english_language"}
 
 logger = logging.getLogger(__name__)
 
@@ -116,3 +119,80 @@ def seed_ceiling_usage(session: Session, path: Path) -> list[CeilingUsage]:
             new_rows.append(row)
     session.commit()
     return new_rows
+
+
+def _build_eligibility_requirement_row(entry: dict) -> EligibilityRequirement:
+    retrieved_at = dt.datetime.fromisoformat(entry["retrieved_at"])
+    require_provenance(
+        reliability_tier="official_curated",
+        source_url=entry["source_url"],
+        retrieved_at=retrieved_at,
+    )
+
+    # Mirrors the DB-level ck_eligibility_requirements_type CHECK
+    # constraint — fail fast here with a clear error rather than relying
+    # on the DB round-trip, matching ceiling_usage's issued/ceiling check.
+    requirement_type = entry["requirement_type"]
+    if requirement_type not in _VALID_REQUIREMENT_TYPES:
+        raise ValueError(
+            f"requirement_type must be one of {sorted(_VALID_REQUIREMENT_TYPES)}, "
+            f"got {requirement_type!r}"
+        )
+
+    return EligibilityRequirement(
+        requirement_type=requirement_type,
+        summary=entry["summary"],
+        source_url=entry["source_url"],
+        retrieved_at=retrieved_at,
+        reliability_tier="official_curated",
+    )
+
+
+def load_eligibility_requirements_seed(path: Path) -> list[EligibilityRequirement]:
+    """Thin wrapper over load_seed_rows — preserves the original
+    signature every existing caller/test uses."""
+    rows, _skipped = load_seed_rows(path, row_builder=_build_eligibility_requirement_row)
+    return rows
+
+
+def seed_eligibility_requirements(session: Session, path: Path) -> list[EligibilityRequirement]:
+    """Load the eligibility_requirements seed file and persist any new or
+    changed rows.
+
+    Upserts by requirement_type: unlike ceiling_usage's per-snapshot
+    history, this is a single current summary per requirement, so a
+    revised summary on re-run must update the existing row rather than
+    accumulate a second one for the same type.
+    """
+    rows = load_eligibility_requirements_seed(path)
+
+    changed_rows = []
+    for row in rows:
+        changed = False
+        with isolated_item(session, f"eligibility_requirements seed for {row.requirement_type}"):
+            existing = session.scalar(
+                select(EligibilityRequirement).where(
+                    EligibilityRequirement.requirement_type == row.requirement_type
+                )
+            )
+            if existing is None:
+                session.add(row)
+                session.flush()  # populate row.id, mirroring ceiling_usage's success check
+                changed = True
+            elif existing.summary != row.summary or existing.source_url != row.source_url:
+                existing.summary = row.summary
+                existing.source_url = row.source_url
+                existing.retrieved_at = row.retrieved_at
+                changed = True
+        # isolated_item's SAVEPOINT commit (or rollback, on a DB-level
+        # failure) only happens on exit from the `with` block above, so
+        # success can only be checked here — see seed_ceiling_usage's
+        # identical row.id check for why this can't move inside the block.
+        if changed:
+            if existing is None:
+                if row.id is not None:
+                    changed_rows.append(row)
+            else:
+                changed_rows.append(existing)
+    session.commit()
+    return changed_rows

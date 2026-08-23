@@ -33,6 +33,7 @@ def test_main_returns_0_when_all_steps_succeed(monkeypatch):
     monkeypatch.setattr(main_module, "sync_program_allocation", lambda session: [])
     monkeypatch.setattr(main_module, "backfill_unresolved_round_codes", lambda session: [])
     monkeypatch.setattr(main_module, "seed_ceiling_usage", lambda session, path: [1, 2, 3])
+    monkeypatch.setattr(main_module, "seed_eligibility_requirements", lambda session, path: [1])
 
     exit_code = main_module.main()
 
@@ -90,6 +91,10 @@ def test_main_returns_2_and_still_runs_remaining_steps_when_one_step_fails(monke
         calls.append("ceiling")
         return [1]
 
+    def ok_eligibility(session, path):
+        calls.append("eligibility")
+        return [1]
+
     monkeypatch.setattr(main_module, "SessionLocal", lambda: _FakeSession())
     monkeypatch.setattr(main_module, "sync_anzsco_occupations", failing_sync)
     monkeypatch.setattr(main_module, "sync_abs_occupations", ok_abs)
@@ -103,11 +108,12 @@ def test_main_returns_2_and_still_runs_remaining_steps_when_one_step_fails(monke
     monkeypatch.setattr(main_module, "sync_program_allocation", ok_program)
     monkeypatch.setattr(main_module, "backfill_unresolved_round_codes", ok_backfill)
     monkeypatch.setattr(main_module, "seed_ceiling_usage", ok_seed)
+    monkeypatch.setattr(main_module, "seed_eligibility_requirements", ok_eligibility)
 
     exit_code = main_module.main()
 
     assert exit_code == 2
-    assert calls == ["anzsco", "abs", "titles", "membership", "skillselect", "summary", "prev", "bp0068", "points", "program", "backfill", "ceiling"]
+    assert calls == ["anzsco", "abs", "titles", "membership", "skillselect", "summary", "prev", "bp0068", "points", "program", "backfill", "ceiling", "eligibility"]
 
 
 def test_main_returns_3_when_all_steps_fail(monkeypatch):
@@ -130,6 +136,7 @@ def test_main_returns_3_when_all_steps_fail(monkeypatch):
     monkeypatch.setattr(main_module, "sync_program_allocation", failing)
     monkeypatch.setattr(main_module, "backfill_unresolved_round_codes", failing)
     monkeypatch.setattr(main_module, "seed_ceiling_usage", failing)
+    monkeypatch.setattr(main_module, "seed_eligibility_requirements", failing)
 
     exit_code = main_module.main()
 
@@ -195,6 +202,7 @@ def test_main_writes_a_run_summary_reflecting_each_steps_outcome(monkeypatch):
     monkeypatch.setattr(main_module, "sync_program_allocation", lambda session: [])
     monkeypatch.setattr(main_module, "backfill_unresolved_round_codes", lambda session: [])
     monkeypatch.setattr(main_module, "seed_ceiling_usage", lambda session, path: [])
+    monkeypatch.setattr(main_module, "seed_eligibility_requirements", lambda session, path: [])
     monkeypatch.setattr(main_module, "write_run_summary", fake_write_run_summary)
 
     exit_code = main_module.main()
@@ -213,6 +221,7 @@ def test_main_writes_a_run_summary_reflecting_each_steps_outcome(monkeypatch):
     assert summary["steps"][9] == {"name": "program_allocation", "status": "ok", "count": 0}
     assert summary["steps"][10] == {"name": "backfill_round_codes", "status": "ok", "count": 0}
     assert summary["steps"][11] == {"name": "ceiling_usage_seed", "status": "ok", "count": 0}
+    assert summary["steps"][12] == {"name": "eligibility_requirements_seed", "status": "ok", "count": 0}
     # finished_at/exit_code must land in the written summary, not just be
     # returned from main() — a summary file read after the fact is the
     # only observability a cron-triggered run has.
@@ -245,6 +254,7 @@ def test_main_writes_an_error_detail_for_a_failed_step(monkeypatch):
     monkeypatch.setattr(main_module, "sync_program_allocation", lambda session: [])
     monkeypatch.setattr(main_module, "backfill_unresolved_round_codes", lambda session: [])
     monkeypatch.setattr(main_module, "seed_ceiling_usage", lambda session, path: [])
+    monkeypatch.setattr(main_module, "seed_eligibility_requirements", lambda session, path: [])
     monkeypatch.setattr(main_module, "write_run_summary", fake_write_run_summary)
 
     exit_code = main_module.main()
@@ -293,6 +303,7 @@ def test_main_threads_parser_skip_count_into_the_step_summary(monkeypatch):
     # ceiling_usage_seed returns a plain list in production (no parser skip
     # count to surface) — must not gain a "skipped" key from unrelated code.
     monkeypatch.setattr(main_module, "seed_ceiling_usage", lambda session, path: [1])
+    monkeypatch.setattr(main_module, "seed_eligibility_requirements", lambda session, path: [1])
     monkeypatch.setattr(main_module, "write_run_summary", fake_write_run_summary)
 
     main_module.main()
@@ -301,3 +312,4 @@ def test_main_threads_parser_skip_count_into_the_step_summary(monkeypatch):
     assert steps[0]["skipped"] == 4
     assert steps[4]["skipped"] == 0
     assert "skipped" not in steps[11]
+    assert "skipped" not in steps[12]
