@@ -195,6 +195,7 @@ from koshi.syncs.anzsco import sync_anzsco_occupations  # noqa: E402
 from koshi.syncs.abs import sync_abs_occupations  # noqa: E402
 from koshi.syncs.occupation_titles import sync_occupation_titles  # noqa: E402
 from koshi.syncs.skillselect import sync_skillselect_rounds  # noqa: E402
+from koshi.syncs.skillselect_summary import sync_skillselect_summary  # noqa: E402
 from koshi.syncs.previous_rounds import sync_skillselect_previous_rounds  # noqa: E402
 from koshi.syncs.bp0068 import sync_bp0068_grants  # noqa: E402
 from koshi.syncs.points_criteria import sync_points_criteria  # noqa: E402
