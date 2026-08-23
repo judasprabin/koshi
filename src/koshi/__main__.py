@@ -47,6 +47,12 @@ Runs, in order:
     seeds/ceiling_usage_manual.yaml. That file is currently empty by
     design: per-occupation ceilings are not published anywhere at
     koshi's grain.
+13. seed_eligibility_requirements — persists the three curated health/
+    character/English-language requirement summaries from
+    seeds/eligibility_requirements_manual.yaml. Tier 5: each of the three
+    source pages uses a different encoding and none carry tabular data,
+    so this is curated prose, not a parser's output — see that file's
+    header comment.
 
 Each step is isolated: a failure in one is logged and recorded in the run
 summary, but does NOT prevent the remaining steps from running — e.g.
@@ -84,9 +90,12 @@ from koshi.pipeline import (
     sync_skillselect_summary,
 )
 from koshi.run_summary import write_run_summary
-from koshi.seeds.loader import seed_ceiling_usage
+from koshi.seeds.loader import seed_ceiling_usage, seed_eligibility_requirements
 
 CEILING_USAGE_SEED_PATH = Path(__file__).parent / "seeds" / "ceiling_usage_manual.yaml"
+ELIGIBILITY_REQUIREMENTS_SEED_PATH = (
+    Path(__file__).parent / "seeds" / "eligibility_requirements_manual.yaml"
+)
 
 
 def main() -> int:
@@ -130,6 +139,10 @@ def main() -> int:
         ("program_allocation", lambda: sync_program_allocation(session)),
         ("backfill_round_codes", lambda: backfill_unresolved_round_codes(session)),
         ("ceiling_usage_seed", lambda: seed_ceiling_usage(session, CEILING_USAGE_SEED_PATH)),
+        (
+            "eligibility_requirements_seed",
+            lambda: seed_eligibility_requirements(session, ELIGIBILITY_REQUIREMENTS_SEED_PATH),
+        ),
     ]
 
     try:
