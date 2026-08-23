@@ -1328,45 +1328,47 @@ Type → Sub-type → Subclass taxonomy is available in BP0068 and only
 
 ### C14. processing_times
 
-**Purpose:** Current visa processing time estimates — median days per visa subclass, as regularly published by Home Affairs.
+**Purpose:** Current visa processing time estimates — percentile-based days-to-decision per visa subclass and stream, as regularly published by Home Affairs.
 
 | Column | PostgreSQL Type | Nullable / Default | Constraints |
 |---|---|---|---|
 | `id` | `INTEGER` | NOT NULL | **PK**, `auto_increment` |
 | `visa_code` | `TEXT` | NOT NULL | **FK** → `visa_subclasses.code` |
-| `as_of_date` | `DATE` | NOT NULL | The date this estimate reflects |
-| `median_days` | `INTEGER` | NOT NULL | Median calendar days until decision |
+| `stream` | `TEXT` | NOT NULL | Multi-stream subclasses (485, 500, 482, 186) publish one estimate per stream — part of the identity, not a fidelity nicety |
+| `as_of_date` | `DATE` | NOT NULL | Derived from fetch time, not the API payload — see decision note below |
+| *(percentile fields)* | — | NOT NULL | Exact field set is pinned when #15 (the build ticket) inspects the live `GetProcessGuideInfo` payload — see decision note |
 | `source_url` | `TEXT` | NOT NULL | Provenance trio |
 | `retrieved_at` | `TIMESTAMPTZ` | NOT NULL | Provenance trio |
 | `reliability_tier` | `TEXT` | NOT NULL, `'official_scraped'` | Provenance trio |
 
-**Unique constraint:** `(visa_code, as_of_date)`.
+**Unique constraint:** `(visa_code, stream, as_of_date)`.
 
 **Relationships:**
 - `processing_times.visa_code` → `visa_subclasses.code`
 
 **Source reference:** Processing times → `processing_times`, via the **`GetProcessGuideVisas` / `GetProcessGuideInfo` JSON API**. Tier 2 (`json_api`) — no HTML parsing.
 
-> **⚠ Audit (F1, I-series) — two independent breaks, one of them a hard
-> constraint violation.**
+> **✅ Decided 2026-08-23 (issue #11) — resolves the audit's two schema
+> breaks.** The original spec (`median_days`, unique on `(visa_code,
+> as_of_date)`) cannot be populated: the API returns a percentile
+> distribution, not a median, and 76 subclass×stream combinations collide
+> under a stream-less unique key for 485/500/482/186.
 >
-> **1. There is no median.** The API returns a **percentile distribution**, not
-> a single figure. `median_days` has no corresponding source field. Storing one
-> percentile and calling it a median would misrepresent the source.
->
-> **2. The stream dimension is missing — the unique constraint collides.** The
-> API returns **76 subclass × stream combinations** across far fewer subclasses.
-> The current unique key has no stream column, so multi-stream subclasses —
-> **485, 500, 482, 186** — produce duplicate keys and the load fails outright.
-> This is not a fidelity nicety; the table cannot be populated as defined.
->
-> **Recommended changes:**
+> **Decided:**
 >
 > | Change | Rationale |
 > |---|---|
-> | Add `stream TEXT NOT NULL` to the table **and the unique constraint** | Without it 76 real rows cannot coexist |
-> | Replace `median_days` with the percentile fields the API actually returns | Model what the source publishes |
-> | `as_of_date` — **weakly sourced** | Not in the API payload; the page states the calculation window in prose only (G15). Derive from fetch time and label it as such |
+> | Add `stream TEXT NOT NULL`, include it in the unique constraint | Without it 76 real rows cannot coexist |
+> | Drop `median_days`; model percentile fields instead | The API doesn't publish a median — storing one percentile under that name would misrepresent the source |
+> | `as_of_date` derived from fetch time, not the payload | Not present in the API response; the page states the calculation window in prose only |
+>
+> **Deliberately not decided here:** the exact percentile column names/count
+> (e.g. `p50_days`/`p90_days` vs. some other shape). Discovering that
+> requires fetching the live `GetProcessGuideInfo` response, which is
+> `#15`'s job (Phase B build), not a schema-shape decision — pinning field
+> names against a guess risks getting them wrong twice. `#15`'s
+> implementer adds the real column names as part of that ticket's
+> migration.
 
 **Status:** Target (migration `0015`).
 
