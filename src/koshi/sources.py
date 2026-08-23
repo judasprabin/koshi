@@ -110,6 +110,16 @@ PROGRAM_ALLOCATION = Source(
     cadence="irregular",  # a few times a year, Budget + mid-year updates
 )
 
+SKILLS_PRIORITY = Source(
+    key="skills_priority",
+    url="https://www.jobsandskills.gov.au/data/occupation-shortage/occupation-shortage-list",
+    domain="www.jobsandskills.gov.au",
+    category="skills_priority",
+    tier="json_api",  # two-step: page discovers the data file's current path
+    feeds=("skills_priority_ratings",),
+    cadence="annual",
+)
+
 BP0068 = Source(
     key="bp0068",
     url=(
@@ -132,5 +142,6 @@ ALL: list[Source] = [
     SKILLSELECT_PREVIOUS_ROUNDS,
     POINTS_CRITERIA,
     PROGRAM_ALLOCATION,
+    SKILLS_PRIORITY,
     BP0068,
 ]
