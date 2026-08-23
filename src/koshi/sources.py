@@ -88,6 +88,18 @@ SKILLSELECT_PREVIOUS_ROUNDS = Source(
     cadence="monthly",
 )
 
+POINTS_CRITERIA = Source(
+    key="points_criteria",
+    # The catalogued URL (/points-tested) genuinely has no points table —
+    # the real one is at this sibling path.
+    url="https://immi.homeaffairs.gov.au/visas/getting-a-visa/visa-listing/skilled-independent-189/points-table",
+    domain="immi.homeaffairs.gov.au",
+    category="points_criteria",
+    tier="hidden_field_json",
+    feeds=("points_criteria_reference",),
+    cadence="rare",  # major policy reform only
+)
+
 BP0068 = Source(
     key="bp0068",
     url=(
@@ -108,5 +120,6 @@ ALL: list[Source] = [
     LIN19051,
     SKILLSELECT_ROUNDS,
     SKILLSELECT_PREVIOUS_ROUNDS,
+    POINTS_CRITERIA,
     BP0068,
 ]

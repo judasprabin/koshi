@@ -197,6 +197,7 @@ from koshi.syncs.occupation_titles import sync_occupation_titles  # noqa: E402
 from koshi.syncs.skillselect import sync_skillselect_rounds  # noqa: E402
 from koshi.syncs.previous_rounds import sync_skillselect_previous_rounds  # noqa: E402
 from koshi.syncs.bp0068 import sync_bp0068_grants  # noqa: E402
+from koshi.syncs.points_criteria import sync_points_criteria  # noqa: E402
 from koshi.syncs.backfill import backfill_unresolved_round_codes  # noqa: E402
 
 from koshi.sources import (  # noqa: E402
@@ -204,6 +205,7 @@ from koshi.sources import (  # noqa: E402
     ANZSCO_OCCUPATIONS,
     BP0068,
     LIN19051,
+    POINTS_CRITERIA,
     SKILLSELECT_PREVIOUS_ROUNDS,
     SKILLSELECT_ROUNDS,
 )
@@ -214,3 +216,4 @@ SKILLSELECT_PREVIOUS_ROUNDS_URL = SKILLSELECT_PREVIOUS_ROUNDS.url
 LIN19051_URL = LIN19051.url
 BP0068_URL = BP0068.url
 ABS_ANZSCO_URL = ABS_ANZSCO.url
+POINTS_CRITERIA_URL = POINTS_CRITERIA.url

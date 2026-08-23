@@ -23,11 +23,14 @@ Runs, in order:
 6. sync_bp0068_grants — per-subclass, per-program-year grant counts from
    BP0068 (data.gov.au, CC-BY). Also seeds visa_subclasses, which the
    funnel needs as an FK parent.
-7. backfill_unresolved_round_codes — retries code resolution for stored
+7. sync_points_criteria — the General Skilled Migration points-test
+   criteria (age, English, work experience, ...). Standalone reference
+   table, no FK — independent of every step above it.
+8. backfill_unresolved_round_codes — retries code resolution for stored
    rounds that never resolved. The crosswalk grows independently of the
    source pages, and an unchanged page is never re-parsed, so without
    this a row unresolved once stays unresolved forever.
-8. seed_ceiling_usage — persists any manually-curated ceiling data in
+9. seed_ceiling_usage — persists any manually-curated ceiling data in
    seeds/ceiling_usage_manual.yaml. That file is currently empty by design:
    per-occupation ceilings are not published anywhere at koshi's grain.
 
@@ -59,6 +62,7 @@ from koshi.pipeline import (
     sync_bp0068_grants,
     sync_anzsco_occupations,
     sync_occupation_titles,
+    sync_points_criteria,
     sync_skillselect_previous_rounds,
     sync_skillselect_rounds,
 )
@@ -103,6 +107,7 @@ def main() -> int:
         ("skillselect_rounds", lambda: sync_skillselect_rounds(session)),
         ("skillselect_previous_rounds", lambda: sync_skillselect_previous_rounds(session)),
         ("bp0068_grants", lambda: sync_bp0068_grants(session)),
+        ("points_criteria", lambda: sync_points_criteria(session)),
         ("backfill_round_codes", lambda: backfill_unresolved_round_codes(session)),
         ("ceiling_usage_seed", lambda: seed_ceiling_usage(session, CEILING_USAGE_SEED_PATH)),
     ]
