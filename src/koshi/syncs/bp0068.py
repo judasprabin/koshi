@@ -32,12 +32,13 @@ def sync_bp0068_grants(
     workbook = fetch_bytes(url, domain="data.gov.au", category="bp0068", client=client)
     result = parse_bp0068_grants(workbook)
 
-    for code, name, category in sorted(
-        {(r.visa_code, r.visa_name, r.visa_category) for r in result.rows}
+    for code, name, category, visa_type in sorted(
+        {(r.visa_code, r.visa_name, r.visa_category, r.visa_type) for r in result.rows}
     ):
         session.merge(
             VisaSubclass(
                 code=code, name=name, visa_category=category,
+                visa_type=visa_type or None,
                 source_url=url, retrieved_at=retrieved_at,
                 reliability_tier="official_scraped",
             )
