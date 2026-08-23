@@ -53,6 +53,15 @@ class GrantRow:
     visa_code: str
     visa_name: str
     visa_category: str
+    # Issue #10: FIELD_TYPE is declared in the live pivot cache's 18 fields
+    # but was never extracted here — this is the concrete, verified part
+    # of "widen visa_subclasses to BP0068's taxonomy" (a full 5-level
+    # Program/Category/Type/Sub-type breakdown is not real; Category and
+    # Type are the only additional structured fields the source has).
+    # Optional (defaults to "" when the field is absent) rather than
+    # load-bearing like visa_category/visa_subclass/program_year, since
+    # it's enrichment, not identity.
+    visa_type: str
     granted_count: int
 
 
@@ -106,9 +115,13 @@ def parse_bp0068_grants(workbook_bytes: bytes) -> ParseResult:
                 f"expected fields {FIELD_PROGRAM_YEAR!r}, {FIELD_SUBCLASS!r} and "
                 f"{FIELD_CATEGORY!r}; cache carries {names!r}"
             ) from exc
+        # Enrichment, not identity: absent in some workbook shapes without
+        # invalidating the load, unlike the three fields above.
+        type_index = names.index(FIELD_TYPE) if FIELD_TYPE in names else None
 
         totals: dict[tuple[str, str], int] = defaultdict(int)
         categories: dict[str, str] = {}
+        types: dict[str, str] = {}
         record_count = 0
         skipped = 0
 
@@ -122,6 +135,11 @@ def parse_bp0068_grants(workbook_bytes: bytes) -> ParseResult:
                     year = fields[year_index][1][int(cells[year_index].get("v"))]
                     subclass = fields[subclass_index][1][int(cells[subclass_index].get("v"))]
                     category = fields[category_index][1][int(cells[category_index].get("v"))]
+                    visa_type = (
+                        fields[type_index][1][int(cells[type_index].get("v"))]
+                        if type_index is not None
+                        else ""
+                    )
                     # The trailing numeric cell is the measure.
                     measure = cells[-1]
                     count = int(float(measure.get("v"))) if measure.tag == f"{_NS}n" else 1
@@ -130,6 +148,7 @@ def parse_bp0068_grants(workbook_bytes: bytes) -> ParseResult:
                 else:
                     totals[(year, subclass)] += count
                     categories[subclass] = category
+                    types[subclass] = visa_type
                 # Free the parsed element: 622k records must not accumulate.
                 element.clear()
 
@@ -149,6 +168,7 @@ def parse_bp0068_grants(workbook_bytes: bytes) -> ParseResult:
                 visa_code=match.group(1),
                 visa_name=match.group(2).strip(),
                 visa_category=categories.get(subclass, ""),
+                visa_type=types.get(subclass, ""),
                 granted_count=count,
             )
         )

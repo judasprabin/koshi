@@ -49,6 +49,8 @@ FIELDS = [
     ("Visa Subclass", ["189 Skilled Independent", "190 Skilled Nominated", "Not Specified"]),
 ]
 
+FIELDS_WITH_TYPE = FIELDS + [("Visa Type", ["Points-tested", "Employer Sponsored"])]
+
 
 def test_aggregates_records_to_year_and_subclass():
     workbook = _workbook(
@@ -104,3 +106,30 @@ def test_renamed_field_fails_loudly_rather_than_misindexing():
 def test_rejects_a_non_workbook():
     with pytest.raises(Bp0068Error):
         parse_bp0068_grants(b"not a zip file")
+
+
+def test_captures_visa_type():
+    """Issue #10: FIELD_TYPE ("Visa Type") is declared in the live pivot
+    cache's 18 fields but was never actually extracted into GrantRow — this
+    is the concrete, verified part of "widen visa_subclasses to BP0068's
+    taxonomy" (the field genuinely exists in the source; a full 5-level
+    Program/Category/Type/Sub-type breakdown does not — only Category and
+    Type are real pivot-cache fields)."""
+    # Record index order matches FIELDS_WITH_TYPE's field order:
+    # (year, category, subclass, type).
+    result = parse_bp0068_grants(
+        _workbook(FIELDS_WITH_TYPE, [((0, 0, 0, 1), 1)])
+    )
+
+    row = result.rows[0]
+    assert row.visa_type == "Employer Sponsored"
+
+
+def test_missing_visa_type_field_defaults_to_empty():
+    """Unlike Category/Subclass/Year, Visa Type is enrichment, not
+    load-bearing — every other test in this file uses FIELDS (no Type
+    field) and must keep passing unchanged. A cache without it ships
+    visa_type="" rather than raising."""
+    result = parse_bp0068_grants(_workbook(FIELDS, [((0, 0, 0), 1)]))
+
+    assert result.rows[0].visa_type == ""

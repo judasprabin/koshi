@@ -406,6 +406,12 @@ See [`2026-08-16-koshi-source-urls.md`](superpowers/research/2026-08-16-koshi-so
 quick-reference table for exactly which of the 23 cataloged data sources
 have real extraction code today versus which remain researched-but-unbuilt.
 
+**Where this is tracked as live work:** the "not yet built" list above is a
+snapshot; [koshi's GitHub Project board](https://github.com/users/judasprabin/projects/3/)
+is where it turns into epics, sequenced decisions, and build tickets with
+dependencies as work actually happens. This doc explains *why* the design
+looks the way it does — the board tracks *what's in flight right now*.
+
 ## 10. Testing philosophy
 
 Every database-touching test runs against a real local Postgres via

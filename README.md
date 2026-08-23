@@ -34,9 +34,13 @@ no "whose data is this" question to answer. See
 |-----|--------------|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Component diagrams, data model (ER diagram), the extraction-watermark design, what's real vs. spec-only |
 | [docs/API.md](docs/API.md) | Every endpoint, request/response examples, the `SourcedFact`/`DerivedFact` contract |
+| [docs/structural-review.md](docs/structural-review.md) | Filesystem/code-organization findings and fixes — sources.py, the syncs/ split, the N+1 fix, and what's still open (docs flatten, Dockerfile) |
 | [docs/superpowers/research/2026-08-16-koshi-source-urls.md](docs/superpowers/research/2026-08-16-koshi-source-urls.md) | Every cataloged data source (23), its verified URL/extraction method, and a quick-reference table of which 6 are actually built |
-| [docs/superpowers/research/2026-08-16-koshi-data-model.md](docs/superpowers/research/2026-08-16-koshi-data-model.md) | Full schema reference — the 9 live tables plus the researched-but-unbuilt ones |
+| [docs/superpowers/research/2026-08-16-koshi-data-model.md](docs/superpowers/research/2026-08-16-koshi-data-model.md) | Full schema reference — the 8 live tables plus the researched-but-unbuilt ones |
 | [docs/superpowers/specs/2026-08-16-koshi-etl-architecture.md](docs/superpowers/specs/2026-08-16-koshi-etl-architecture.md) | The deep-dive doc: Part I is what's built (more detail than ARCHITECTURE.md), Part II is deferred reference architecture, Part III is history |
+| [docs/tracking/](docs/tracking/) | Spreadsheet-friendly CSVs (sources, tables, columns) for tracking what's built vs. target — see its README for provenance and how to regenerate |
+
+**Live execution tracker:** the design docs above are the *what and why*; [koshi's GitHub Project board](https://github.com/users/judasprabin/projects/3/) is the *what's actually in flight right now* — epics, decisions, build tickets, and their dependencies. If the two ever disagree on current state, the board wins; file an issue to fix the doc.
 
 ## Architecture
 

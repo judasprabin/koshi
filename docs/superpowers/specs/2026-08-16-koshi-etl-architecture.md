@@ -102,7 +102,7 @@ to `lukla` (the frontend).
 | | |
 |---|---|
 | Sources extracted | **6** — JSA/ANZSCO (paginated), SkillSelect current round, SkillSelect round archive, ABS ANZSCO workbook, LIN 19/051, BP0068 |
-| Tables | **9**, 8 populated — `occupations` (1,485), `occupation_titles` (1,929), `eoi_rounds` (786, 0 unresolved), `occupation_momentum` (140), `visa_subclasses` (62), `application_funnel` (432), `source_pages` (3). `ceiling_usage` is intentionally empty — the data is not published |
+| Tables | **8**, 7 populated — `occupations` (1,485), `occupation_titles` (1,929), `eoi_rounds` (786, 0 unresolved), `occupation_momentum` (140), `visa_subclasses` (62), `application_funnel` (432), `source_pages` (3). `ceiling_usage` is intentionally empty — the data is not published |
 | Migrations | 11 |
 | Tests | 136, all passing |
 | Pipeline run | `python -m koshi` exits `0` end to end |
@@ -666,7 +666,7 @@ below states the trigger that would justify building it.
 | Dimension | Today (Part I) | Target (this Part) |
 |---|---|---|
 | Sources extracted | 6 | 23 cataloged sources |
-| Tables populated | 8 of 9 | 22 domain tables |
+| Tables populated | 7 of 8 | 22 domain tables |
 | Extraction tiers in use | 2 — deterministic + manual curation | Same. **Tiers 3/4 are not needed by any catalogued source** |
 | Fault tolerance | Retry/backoff, per-item isolation, structured logging, run summaries, structural assertions | + quality engine, quarantine, releases |
 | Scheduling | Manual (`python -m koshi`) | Cadence groups documented, not active |
