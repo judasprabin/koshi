@@ -17,22 +17,28 @@ Runs, in order:
 4. sync_skillselect_rounds — persists new EOI rounds, resolves each one's
    occupation_code via the crosswalk, and (per pipeline.py) refreshes
    occupation_momentum for every occupation a new round touches.
-5. sync_skillselect_previous_rounds — backfills historical rounds. Momentum
+5. sync_skillselect_summary — the same page's Tables A/C/D (round totals,
+   monthly invitation matrix, state/territory nominations). Runs right
+   after sync_skillselect_rounds since it shares that page's fetch and
+   SourcePage row; see syncs/skillselect_summary.py for why it does not
+   gate on the extraction watermark those two steps would otherwise share.
+6. sync_skillselect_previous_rounds — backfills historical rounds. Momentum
    needs a trailing window of three rounds and the current-round page
    publishes one, so without this every occupation's trend is null.
-6. sync_bp0068_grants — per-subclass, per-program-year grant counts from
+7. sync_bp0068_grants — per-subclass, per-program-year grant counts from
    BP0068 (data.gov.au, CC-BY). Also seeds visa_subclasses, which the
    funnel needs as an FK parent.
-7. sync_points_criteria — the General Skilled Migration points-test
+8. sync_points_criteria — the General Skilled Migration points-test
    criteria (age, English, work experience, ...). Standalone reference
    table, no FK — independent of every step above it.
-8. backfill_unresolved_round_codes — retries code resolution for stored
+9. backfill_unresolved_round_codes — retries code resolution for stored
    rounds that never resolved. The crosswalk grows independently of the
    source pages, and an unchanged page is never re-parsed, so without
    this a row unresolved once stays unresolved forever.
-9. seed_ceiling_usage — persists any manually-curated ceiling data in
-   seeds/ceiling_usage_manual.yaml. That file is currently empty by design:
-   per-occupation ceilings are not published anywhere at koshi's grain.
+10. seed_ceiling_usage — persists any manually-curated ceiling data in
+    seeds/ceiling_usage_manual.yaml. That file is currently empty by
+    design: per-occupation ceilings are not published anywhere at
+    koshi's grain.
 
 Each step is isolated: a failure in one is logged and recorded in the run
 summary, but does NOT prevent the remaining steps from running — e.g.
@@ -65,6 +71,7 @@ from koshi.pipeline import (
     sync_points_criteria,
     sync_skillselect_previous_rounds,
     sync_skillselect_rounds,
+    sync_skillselect_summary,
 )
 from koshi.run_summary import write_run_summary
 from koshi.seeds.loader import seed_ceiling_usage
@@ -105,6 +112,7 @@ def main() -> int:
         ("abs_occupations", lambda: sync_abs_occupations(session)),
         ("occupation_titles", lambda: sync_occupation_titles(session)),
         ("skillselect_rounds", lambda: sync_skillselect_rounds(session)),
+        ("skillselect_summary", lambda: sync_skillselect_summary(session)),
         ("skillselect_previous_rounds", lambda: sync_skillselect_previous_rounds(session)),
         ("bp0068_grants", lambda: sync_bp0068_grants(session)),
         ("points_criteria", lambda: sync_points_criteria(session)),

@@ -10,7 +10,10 @@ added under koshi/models/.
 from koshi.models import (  # noqa: F401
     application_funnel,
     ceiling_usage,
+    eoi_invitation_monthly,
+    eoi_round_totals,
     eoi_rounds,
+    eoi_state_nominations,
     occupation_momentum,
     occupation_titles,
     occupations,
