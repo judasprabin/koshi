@@ -14,6 +14,7 @@ from koshi.models import (  # noqa: F401
     eoi_round_totals,
     eoi_rounds,
     eoi_state_nominations,
+    occupation_list_membership,
     occupation_momentum,
     occupation_titles,
     occupations,
