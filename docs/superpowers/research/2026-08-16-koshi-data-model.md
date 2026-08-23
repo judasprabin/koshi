@@ -1392,9 +1392,16 @@ Type → Sub-type → Subclass taxonomy is available in BP0068 and only
 
 **Relationships:** None — standalone aggregate table.
 
-**Source reference:** Planning-levels PDF → `program_allocation` + `ceiling_usage`. Tier 5 (manual YAML curation — same PDF source as `ceiling_usage`).
+**Source reference:** ~~Planning-levels PDF~~ → **hidden-field JSON page**,
+same pattern as every other Home Affairs source. Tier **2** (was
+catalogued as tier 5 / PDF — wrong; the 2026-08 audit found zero PDFs on
+the page, and the full 3-year table is in the hidden-field JSON — see
+`2026-08-16-koshi-source-urls.md` §3). `ceiling_usage` remains genuinely
+unpublished and unrelated to this source.
 
-**Status:** Target (migration `0016`).
+### ✅ Built 2026-08-23 — migration `0016`, 30 rows (10 streams × 3 years)
+
+**Status:** Built.
 
 ---
 

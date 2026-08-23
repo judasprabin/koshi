@@ -19,6 +19,7 @@ from koshi.models import (  # noqa: F401
     occupation_titles,
     occupations,
     points_criteria_reference,
+    program_allocation,
     source_pages,
     visa_subclasses,
 )

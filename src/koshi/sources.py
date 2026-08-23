@@ -100,6 +100,16 @@ POINTS_CRITERIA = Source(
     cadence="rare",  # major policy reform only
 )
 
+PROGRAM_ALLOCATION = Source(
+    key="program_allocation",
+    url="https://immi.homeaffairs.gov.au/what-we-do/migration-program-planning-levels",
+    domain="immi.homeaffairs.gov.au",
+    category="program_allocation",
+    tier="hidden_field_json",
+    feeds=("program_allocation",),
+    cadence="irregular",  # a few times a year, Budget + mid-year updates
+)
+
 BP0068 = Source(
     key="bp0068",
     url=(
@@ -121,5 +131,6 @@ ALL: list[Source] = [
     SKILLSELECT_ROUNDS,
     SKILLSELECT_PREVIOUS_ROUNDS,
     POINTS_CRITERIA,
+    PROGRAM_ALLOCATION,
     BP0068,
 ]
