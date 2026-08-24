@@ -2,7 +2,6 @@ import datetime as dt
 import logging
 
 import httpx
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from koshi.crawler.fetch import fetch_and_register
@@ -10,6 +9,7 @@ from koshi.extraction.program_allocation import parse_program_allocation
 from koshi.models.program_allocation import ProgramAllocation
 from koshi.pipeline import _RowsWithSkipCount, _needs_extraction
 from koshi.sources import PROGRAM_ALLOCATION
+from koshi.syncs._upsert import upsert_by_key
 
 logger = logging.getLogger(__name__)
 
@@ -40,24 +40,19 @@ def sync_program_allocation(
 
     written: list[ProgramAllocation] = []
     for row in result.rows:
-        existing = session.scalar(
-            select(ProgramAllocation).where(
-                ProgramAllocation.program_year == row.program_year,
-                ProgramAllocation.stream_name == row.stream_name,
-            )
-        )
-        if existing is None:
-            record = ProgramAllocation(
+        record, was_written = upsert_by_key(
+            session, ProgramAllocation,
+            key={"program_year": row.program_year, "stream_name": row.stream_name},
+            values={"places": row.places},
+            retrieved_at=retrieved_at,
+            build=lambda row=row: ProgramAllocation(
                 program_year=row.program_year, stream_name=row.stream_name,
                 places=row.places, source_url=url, retrieved_at=retrieved_at,
                 reliability_tier="official_scraped",
-            )
-            session.add(record)
+            ),
+        )
+        if was_written:
             written.append(record)
-        elif existing.places != row.places:
-            existing.places = row.places
-            existing.retrieved_at = retrieved_at
-            written.append(existing)
 
     page.last_extracted_at = dt.datetime.now(dt.timezone.utc)
     session.commit()

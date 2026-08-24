@@ -2,7 +2,6 @@ import datetime as dt
 import logging
 
 import httpx
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from koshi.crawler.fetch import fetch_and_register
@@ -10,6 +9,7 @@ from koshi.extraction.points_criteria import parse_points_criteria
 from koshi.models.points_criteria_reference import PointsCriterion
 from koshi.pipeline import _RowsWithSkipCount, _needs_extraction
 from koshi.sources import POINTS_CRITERIA
+from koshi.syncs._upsert import upsert_by_key
 
 logger = logging.getLogger(__name__)
 
@@ -40,27 +40,22 @@ def sync_points_criteria(
 
     written: list[PointsCriterion] = []
     for row in result.rows:
-        existing = session.scalar(
-            select(PointsCriterion).where(
-                PointsCriterion.criterion_name == row.criterion_name,
-                PointsCriterion.band_description == row.band_description,
-            )
-        )
-        if existing is None:
-            record = PointsCriterion(
+        record, was_written = upsert_by_key(
+            session, PointsCriterion,
+            key={"criterion_name": row.criterion_name, "band_description": row.band_description},
+            values={"points_value": row.points_value},
+            retrieved_at=retrieved_at,
+            build=lambda row=row: PointsCriterion(
                 criterion_name=row.criterion_name,
                 band_description=row.band_description,
                 points_value=row.points_value,
                 source_url=url,
                 retrieved_at=retrieved_at,
                 reliability_tier="official_scraped",
-            )
-            session.add(record)
+            ),
+        )
+        if was_written:
             written.append(record)
-        elif existing.points_value != row.points_value:
-            existing.points_value = row.points_value
-            existing.retrieved_at = retrieved_at
-            written.append(existing)
 
     page.last_extracted_at = dt.datetime.now(dt.timezone.utc)
     session.commit()
