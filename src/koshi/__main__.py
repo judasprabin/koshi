@@ -39,15 +39,19 @@ Runs, in order:
 10. sync_program_allocation — annual planning levels (places per stream).
     Standalone aggregate table, no FK — independent of every step above
     it, same as points_criteria.
-11. backfill_unresolved_round_codes — retries code resolution for stored
+11. sync_skills_priority — JSA's occupation shortage ratings, per
+    jurisdiction. FK to occupations.code, so must follow steps 1-2; a
+    two-step fetch (the page only reveals the data file's current,
+    timestamped path) — see syncs/skills_priority.py.
+12. backfill_unresolved_round_codes — retries code resolution for stored
     rounds that never resolved. The crosswalk grows independently of the
     source pages, and an unchanged page is never re-parsed, so without
     this a row unresolved once stays unresolved forever.
-12. seed_ceiling_usage — persists any manually-curated ceiling data in
+13. seed_ceiling_usage — persists any manually-curated ceiling data in
     seeds/ceiling_usage_manual.yaml. That file is currently empty by
     design: per-occupation ceilings are not published anywhere at
     koshi's grain.
-13. seed_eligibility_requirements — persists the three curated health/
+14. seed_eligibility_requirements — persists the three curated health/
     character/English-language requirement summaries from
     seeds/eligibility_requirements_manual.yaml. Tier 5: each of the three
     source pages uses a different encoding and none carry tabular data,
@@ -86,6 +90,7 @@ from koshi.pipeline import (
     sync_points_criteria,
     sync_program_allocation,
     sync_skillselect_previous_rounds,
+    sync_skills_priority,
     sync_skillselect_rounds,
     sync_skillselect_summary,
 )
@@ -137,6 +142,7 @@ def main() -> int:
         ("bp0068_grants", lambda: sync_bp0068_grants(session)),
         ("points_criteria", lambda: sync_points_criteria(session)),
         ("program_allocation", lambda: sync_program_allocation(session)),
+        ("skills_priority", lambda: sync_skills_priority(session)),
         ("backfill_round_codes", lambda: backfill_unresolved_round_codes(session)),
         ("ceiling_usage_seed", lambda: seed_ceiling_usage(session, CEILING_USAGE_SEED_PATH)),
         (

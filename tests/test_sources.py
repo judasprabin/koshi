@@ -14,7 +14,7 @@ def test_all_lists_every_built_source():
     # One entry per source actually wired into python -m koshi today.
     # If this count changes, either a source was added (update ALL) or
     # removed (same).
-    assert len(sources.ALL) == 8
+    assert len(sources.ALL) == 9
 
 
 def test_every_source_has_required_fields():
@@ -50,6 +50,7 @@ def test_named_sources_are_all_present_in_ALL():
     named = {
         sources.ANZSCO_OCCUPATIONS, sources.ABS_ANZSCO, sources.LIN19051,
         sources.SKILLSELECT_ROUNDS, sources.SKILLSELECT_PREVIOUS_ROUNDS,
-        sources.POINTS_CRITERIA, sources.PROGRAM_ALLOCATION, sources.BP0068,
+        sources.POINTS_CRITERIA, sources.PROGRAM_ALLOCATION,
+        sources.SKILLS_PRIORITY, sources.BP0068,
     }
     assert named == set(sources.ALL)
