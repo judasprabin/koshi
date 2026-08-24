@@ -2,7 +2,6 @@ import datetime as dt
 import logging
 
 import httpx
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from koshi.crawler.fetch import fetch_bytes
@@ -11,6 +10,7 @@ from koshi.models.application_funnel import ApplicationFunnel
 from koshi.models.visa_subclasses import VisaSubclass
 from koshi.pipeline import _RowsWithSkipCount
 from koshi.sources import BP0068
+from koshi.syncs._upsert import upsert_by_key
 
 logger = logging.getLogger(__name__)
 
@@ -47,27 +47,22 @@ def sync_bp0068_grants(
 
     written: list[ApplicationFunnel] = []
     for row in result.rows:
-        existing = session.scalar(
-            select(ApplicationFunnel).where(
-                ApplicationFunnel.visa_code == row.visa_code,
-                ApplicationFunnel.program_year == row.program_year,
-            )
-        )
-        if existing is None:
-            record = ApplicationFunnel(
+        record, was_written = upsert_by_key(
+            session, ApplicationFunnel,
+            key={"visa_code": row.visa_code, "program_year": row.program_year},
+            values={"granted_count": row.granted_count},
+            retrieved_at=retrieved_at,
+            build=lambda row=row: ApplicationFunnel(
                 visa_code=row.visa_code,
                 program_year=row.program_year,
                 granted_count=row.granted_count,
                 source_url=url,
                 retrieved_at=retrieved_at,
                 reliability_tier="official_scraped",
-            )
-            session.add(record)
+            ),
+        )
+        if was_written:
             written.append(record)
-        elif existing.granted_count != row.granted_count:
-            existing.granted_count = row.granted_count
-            existing.retrieved_at = retrieved_at
-            written.append(existing)
     session.commit()
     logger.info(
         "bp0068: %d records -> %d funnel rows (%d written)",
