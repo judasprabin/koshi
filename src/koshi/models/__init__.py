@@ -11,6 +11,7 @@ from koshi.models import (  # noqa: F401
     application_funnel,
     ceiling_usage,
     eligibility_requirements,
+    english_test_bands,
     eoi_invitation_monthly,
     eoi_round_totals,
     eoi_rounds,

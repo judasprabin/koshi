@@ -202,6 +202,7 @@ from koshi.syncs.bp0068 import sync_bp0068_grants  # noqa: E402
 from koshi.syncs.points_criteria import sync_points_criteria  # noqa: E402
 from koshi.syncs.program_allocation import sync_program_allocation  # noqa: E402
 from koshi.syncs.skills_priority import sync_skills_priority  # noqa: E402
+from koshi.syncs.english_test_bands import sync_english_test_bands  # noqa: E402
 from koshi.syncs.backfill import backfill_unresolved_round_codes  # noqa: E402
 
 from koshi.sources import (  # noqa: E402
@@ -212,6 +213,8 @@ from koshi.sources import (  # noqa: E402
     POINTS_CRITERIA,
     PROGRAM_ALLOCATION,
     SKILLS_PRIORITY,
+    LIN25016_SCHEDULE2,
+    FUNCTIONAL_ENGLISH,
     SKILLSELECT_PREVIOUS_ROUNDS,
     SKILLSELECT_ROUNDS,
 )
@@ -225,3 +228,5 @@ ABS_ANZSCO_URL = ABS_ANZSCO.url
 POINTS_CRITERIA_URL = POINTS_CRITERIA.url
 PROGRAM_ALLOCATION_URL = PROGRAM_ALLOCATION.url
 SKILLS_PRIORITY_URL = SKILLS_PRIORITY.url
+LIN25016_SCHEDULE2_URL = LIN25016_SCHEDULE2.url
+FUNCTIONAL_ENGLISH_URL = FUNCTIONAL_ENGLISH.url

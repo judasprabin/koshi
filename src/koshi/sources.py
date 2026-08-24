@@ -120,6 +120,34 @@ SKILLS_PRIORITY = Source(
     cadence="annual",
 )
 
+LIN25016_SCHEDULE2 = Source(
+    key="lin25016_schedule2",
+    # The compiled instrument's own path segments pin the compilation
+    # (asmade/<date>), same convention as LIN19051_URL.
+    url=(
+        "https://www.legislation.gov.au/F2025L00905/asmade/2025-08-06"
+        "/text/original/epub/OEBPS/document_1/document_1.html"
+    ),
+    domain="www.legislation.gov.au",
+    category="lin25016_schedule2",
+    tier="epub_table_positional",
+    feeds=("english_test_bands",),
+    cadence="irregular",  # instrument amendment
+)
+
+FUNCTIONAL_ENGLISH = Source(
+    key="functional_english",
+    url=(
+        "https://www.legislation.gov.au/F2025L00904/asmade/2025-08-06"
+        "/text/original/epub/OEBPS/document_1/document_1.html"
+    ),
+    domain="www.legislation.gov.au",
+    category="functional_english",
+    tier="epub_table_positional",
+    feeds=("english_test_bands",),
+    cadence="irregular",
+)
+
 BP0068 = Source(
     key="bp0068",
     url=(
@@ -143,5 +171,7 @@ ALL: list[Source] = [
     POINTS_CRITERIA,
     PROGRAM_ALLOCATION,
     SKILLS_PRIORITY,
+    LIN25016_SCHEDULE2,
+    FUNCTIONAL_ENGLISH,
     BP0068,
 ]
